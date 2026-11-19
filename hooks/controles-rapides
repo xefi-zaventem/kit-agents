@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """controles-rapides — hook PostToolUse sur Write, Edit, MultiEdit, NotebookEdit.
 
-Lance « ./init.sh --controles <fichier> » à la racine du dépôt : lint et format du
+Lance « init.sh --controles <fichier> » à la racine du dépôt : lint et format du
 fichier modifié, avec les outils choisis par le projet (docs/adaptation-du-kit.md).
+init.sh est pris à la référence (origin/main, git show), jamais dans la copie de
+travail : un init.sh réécrit par l'agent n'est pas exécuté.
 L'échec est renvoyé à l'agent (code 2 : la doc précise qu'en PostToolUse ce code
 ne peut pas annuler l'écriture, il montre la sortie à l'agent).
 
-ÉCHOUER FERMÉ : init.sh absent, délai dépassé ou erreur interne = échec signalé.
+ÉCHOUER FERMÉ : init.sh absent de la référence, délai dépassé ou erreur interne = échec signalé.
 Un fichier hors du dépôt n'est pas contrôlé.
 """
 import json
 import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                                "bin"))
+import kit_commun as kc  # noqa: E402
 
 DELAI = 90
 
@@ -41,12 +47,10 @@ def principal():
     racine = os.path.realpath(r.stdout.strip())
     if not chemin.startswith(racine + os.sep):
         sys.exit(0)
-    init = os.path.join(racine, "init.sh")
-    if not os.access(init, os.X_OK):
-        echec("init.sh absent ou non exécutable : contrôles impossibles")
     try:
-        r = subprocess.run([init, "--controles", os.path.relpath(chemin, racine)],
-                           cwd=racine, capture_output=True, text=True, timeout=DELAI)
+        r = kc.lancer_init(racine, ["--controles", os.path.relpath(chemin, racine)], DELAI)
+    except kc.Erreur as e:
+        echec(str(e) + " : contrôles impossibles")
     except subprocess.TimeoutExpired:
         echec("délai dépassé (%d s)" % DELAI)
     if r.returncode != 0:

@@ -10,7 +10,9 @@
     "deny": [
       "Edit(tests/acceptance/**)",
       "Edit(feature_list.json)",
+      "Edit(init.sh)",
       "Edit(.claude/**)",
+      "Edit(~/.claude/**)",
       "Read(.env*)",
       "Read(**/secrets/**)"
     ]
@@ -22,7 +24,10 @@
     "filesystem": {
       "denyWrite": [
         "tests/acceptance",
-        "feature_list.json"
+        "feature_list.json",
+        "init.sh",
+        ".claude",
+        "~/.claude"
       ],
       "denyRead": [
         "**/secrets"

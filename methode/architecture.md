@@ -6,6 +6,8 @@
 > Version 4 (18/11/2026) : pas de root sur une machine d'infrastructure (§4.3), `marquer-valide`
 > dans un bac à sable (§4.2), CI et `/code-review` avant fusion, `orchestre` réduit (§5), limite de
 > `onFailure` sur `Stop` (§4.4), budget de l'abonnement (§5.2).
+> Version 5 (19/11/2026) : `orchestre` ne fusionne jamais seul (D29, §5.1), résultat du hook `Stop`
+> lu par `orchestre`, `system/init` sans les hooks, réponse `(none)` de `/code-review`.
 
 ---
 
@@ -108,10 +110,10 @@ Construction (Claude Code, dans la machine de dev du projet)
 | Contrat de sprint | Remplacé par les `steps` validés par l'humain + contrats d'architecture | Le périmètre est figé avant ; moins de tokens |
 | Évaluateur | Après la tranche exemplaire, puis par jalon | Hypothèse : nos fonctionnalités sont à la portée du modèle seul ; à revoir si les jalons échouent |
 | `passes` | Modifié **uniquement** par `marquer-valide`, qui prend le test dans la branche de référence et le lance dans un bac à sable jetable (`08` §5) | Plus robuste qu'une consigne ou un hook ; le code de l'agent ne tourne jamais avec le droit d'écrire `passes` |
-| Contrôle final | CI (GitHub Actions) sur chaque envoi ; fusion seulement si verte | Hors de la machine de l'agent ; compense l'absence de protection de `main` |
+| Contrôle final | CI (GitHub Actions) sur chaque envoi ; fusion seulement si verte, revérifiée juste avant | Hors de la machine de l'agent ; compense l'absence de protection de `main` |
 | Relecture | `/code-review` (fonction native) par fonctionnalité, « skip style » | Regard neuf à faible coût, sans outil maison |
 | Garde-fous | Sandbox + permissions + hooks (§4.3) ; jamais de root sur une machine d'infrastructure | Anthropic n'en utilise pas ; nos agents tournent sans surveillance |
-| Orchestration | `orchestre` réduit : `claude -p` en worktrees, fusion une par une (§5) | Plus simple qu'un orchestrateur SDK ; on s'appuie sur les fonctions natives (worktrees, sous-agents) |
+| Orchestration | `orchestre` réduit : `claude -p` en worktrees, classement « prête » / « à relire » ; la fusion, une par une, est lancée par le pilote (`orchestre fusionner`, D29, §5) | Plus simple qu'un orchestrateur SDK ; on s'appuie sur les fonctions natives (worktrees, sous-agents) ; un humain décide de chaque entrée dans `main` |
 
 ### 4.3 Garde-fous : trois couches
 
@@ -122,9 +124,9 @@ permissions**, pas les hooks. Le kit applique donc :
 | Couche | Ce qu'elle fait | Limite connue |
 |---|---|---|
 | **1. Sandbox** (`sandbox.enabled`, `allowUnsandboxedCommands: false`, `failIfUnavailable: true`) | Les commandes shell tournent dans un espace réseau séparé, avec une liste de domaines autorisés ; écriture limitée au dépôt ; `.claude/settings*.json` et `.claude/hooks` toujours protégés en écriture | Ne couvre pas les outils Read/Edit/Write (couche 2). À ne pas utiliser seule face à une commande malveillante |
-| **2. Permissions `deny`** | `Edit`/`Write` interdits sur `tests/acceptance/**`, `feature_list.json`, `.claude/**` ; `Read` interdit sur les fichiers de secrets. Les règles `Edit` sont aussi reportées dans le sandbox | Les règles portent sur des chemins, pas sur le contenu |
+| **2. Permissions `deny`** | `Edit` interdit sur `tests/acceptance/**`, `feature_list.json`, `init.sh`, `.claude/**`, `~/.claude/**` ; `Read` interdit sur les fichiers de secrets. Les mêmes chemins sont dans `sandbox.filesystem.denyWrite`. Pas de règle `Write(...)` : la doc précise que les outils de fichiers ne lisent que `Edit` et `Read` | Les règles portent sur des chemins, pas sur le contenu |
 | **3. Hooks** (avec `onFailure: "block"`) | Contrôles de **contenu** : secret dans un texte écrit, commande interdite propre à la machine, lint après écriture, conditions de fin de session | Contournables seuls ; utiles en complément |
-| **Contrôle après coup** (hook `Stop` + pre-commit) | `git diff` vide sur `tests/acceptance/` ; diff de `feature_list.json` limité au champ `passes` | Détecte, n'empêche pas : sert de filet |
+| **Contrôle après coup** (hook `Stop`, CI) | `git diff` vide sur `tests/acceptance/` et `init.sh` ; diff de `feature_list.json` limité au champ `passes` ; `init.sh` toujours lancé dans sa version de la référence (`08` §10) | Détecte, n'empêche pas : sert de filet |
 
 **Machine d'infrastructure** (hyperviseur, hôte de conteneurs) : l'agent n'y a **pas** le root.
 Il tourne sous un utilisateur dédié, **avec** le sandbox, et passe par deux portes sudo sans mot de
@@ -148,7 +150,7 @@ depuis le compte de l'agent. Le hook reste comme filet contre l'erreur.
 | `garde-commandes` | `PreToolUse` sur `Bash` | Refuse (code 2) les commandes listées par `ENVIRONNEMENT.md`. En mode `-p`, « demander » vaut refus : on refuse directement, avec un message qui dit à l'agent de noter la demande dans `claude-progress.txt` sous `DEMANDE HUMAINE` |
 | `garde-secrets` | `PreToolUse` sur `Write`, `Edit`, `Bash` | Refuse un texte qui contient un secret (motifs + outil type gitleaks) |
 | `controles-rapides` | `PostToolUse` sur `Write`, `Edit` | Lint et format du fichier modifié ; l'échec est renvoyé à l'agent (le hook ne peut pas annuler) |
-| `fin-de-session` | `Stop` | Bloque la fin si : typage, imports ou tests rapides échouent ; progression non mise à jour ; diff interdit (§4.3). **Au plus 3 blocages par session**, ensuite il laisse finir en écrivant `ÉCHEC FIN DE SESSION` dans la progression (contre les boucles infinies). **Limite** : la doc précise que `onFailure` n'a aucun effet sur `Stop` ; si ce hook plante, la session se termine quand même. Le filet est alors la CI et le contrôle de `orchestre` avant fusion. Claude Code arrête de lui-même après 8 blocages consécutifs |
+| `fin-de-session` | `Stop` | Bloque la fin si : typage, imports ou tests rapides échouent ; progression non mise à jour ; diff interdit (§4.3). **Au plus 3 blocages par session**, ensuite il laisse finir en écrivant `ÉCHEC FIN DE SESSION` dans la progression (contre les boucles infinies). **Limite** : la doc précise que `onFailure` n'a aucun effet sur `Stop` ; si ce hook plante, la session se termine quand même. Le filet est alors `orchestre`, qui lit le **résultat** du hook (événement `hook_response` : code de sortie et sortie) : hook sauté, sans résultat ou terminé autrement qu'en code 0 = branche « à relire » ; puis la CI. Sans aucun diff (ex. la relecture, dans un checkout propre de la référence), il n'y a rien à contrôler et la fin passe. Claude Code arrête de lui-même après 8 blocages consécutifs |
 | `verrou-ressources` | `PreToolUse` sur `Bash` | Refuse une commande qui touche une ressource partagée verrouillée par une autre session (06, §2.10) |
 
 ### 4.5 Skills
@@ -178,16 +180,33 @@ réel (06, §2.12). Pour chaque dépôt déclaré :
 
 1. Lire `feature_list.json`, choisir les fonctionnalités prêtes (non validées, dépendances validées).
 2. Former les lots parallèles selon 06, §2.10 (au plus 3).
-3. Pour chacune : créer le worktree, lancer
-   `claude -p "<prompt court : id + rituel>" --output-format json --max-budget-usd <plafond>`
-   avec les réglages du dépôt (**pas** de `--bare`, qui ignore hooks et `CLAUDE.md` et deviendra le
-   défaut de `-p` : le script passe `--settings` explicitement et vérifie dans l'événement `system/init`
-   que les hooks sont chargés, sinon il s'arrête).
+3. Pour chacune : lancer
+   `claude -p "<prompt court : id + rituel>" --worktree <id> --output-format stream-json --include-hook-events`
+   (`--max-budget-usd <plafond>` seulement sans surveillance) avec les réglages du dépôt (**pas** de
+   `--bare`, qui ignore hooks et `CLAUDE.md` et deviendra le défaut de `-p` : le script passe
+   `--settings` explicitement). L'environnement de la session est nettoyé de toute variable `KIT_*`
+   sauf celles qu'`orchestre` pose lui-même (`KIT_FONCTIONNALITE`).
+   **`system/init` ne liste pas les hooks** (vérifié par un essai) : `orchestre` y vérifie la version
+   et le worktree, et contrôle les hooks par `--include-hook-events` : un outil qui tourne avant tout
+   hook `PreToolUse` arrête la session ; le hook `Stop` doit avoir tourné et son dernier résultat
+   (`hook_response`) doit être un code 0.
 4. Mode de permission : `acceptEdits` + liste `--allowedTools` explicite. **Jamais** `bypassPermissions`.
-5. Fusionner une par une, **seulement si la CI est verte** sur la branche et après `/code-review`
-   sans problème bloquant ; tests complets après chaque fusion ; conflit → file d'attente.
-6. Écrire un récapitulatif : validées, contestées, `TROP GROS`, demandes humaines, coût et taille du
-   diff de chaque fonctionnalité (06, §2.12), coût total.
+5. Classer chaque branche (règle de fusion **D29**) : **« prête »** seulement si la CI est verte, si le
+   verdict de `/code-review` (lancé dans un checkout propre de `origin/main`) est **exactement la
+   dernière ligne non vide** de la réponse et vaut `(none)` ou `VERDICT : AUCUN BLOQUANT`, et si le
+   diff reste dans les `touches` (plus les conditions de la session : validée, hook `Stop` en code 0,
+   pas d'`ÉCHEC FIN DE SESSION`, taille du diff). Tout le reste est **« à relire »**. En `-p`,
+   `/code-review` répond `(none)` quand il ne trouve rien, et ignore souvent la consigne de verdict ;
+   essai du 19/11/2026 : il ajoute parfois un paragraphe après `(none)`, et la branche reste alors à
+   relire (coût : une relecture humaine, pas un risque). Un verdict cité plus haut dans la réponse
+   (par exemple recopié d'un commentaire du diff) ne compte pas.
+6. Écrire un récapitulatif : prêtes, à relire (avec la raison), contestées, `TROP GROS`, demandes
+   humaines, coût et taille du diff de chaque fonctionnalité (06, §2.12), coût total.
+
+`orchestre` ne fusionne **jamais** seul dans `main` (D29). Le pilote lit le récapitulatif, puis lance
+`orchestre fusionner` : les branches « prêtes » du dernier récapitulatif sont fusionnées une par une,
+dans l'ordre de priorité, si la branche n'a pas bougé depuis et si la CI, revérifiée juste avant, est
+verte ; tests complets après chaque fusion ; conflit ou rouge → pas de fusion, file d'attente.
 
 Ce que `orchestre` ne fait **pas** : choisir le modèle, réessayer en boucle, résoudre un conflit,
 modifier `feature_list.json` autrement que par `marquer-valide`. Sans `orchestre`, la même chose se
@@ -204,7 +223,8 @@ fait à la main avec `claude --worktree <nom>` (fonction native), une session pa
   précise que les limites Pro et Max supposent un usage individuel ordinaire. Trois agents en boucle
   s'en approchent : on mesure le coût réel après la tranche exemplaire avant de lancer le parallélisme.
 - `--bare` deviendra le défaut de `-p` (doc) et n'utilise pas la connexion de l'abonnement :
-  `orchestre` vérifie à chaque lancement, dans `system/init`, que hooks et réglages sont chargés.
+  `orchestre` ne le passe jamais, et vérifie à chaque lancement que les hooks tournent (événements
+  de hooks : `system/init` ne les liste pas).
 
 ---
 

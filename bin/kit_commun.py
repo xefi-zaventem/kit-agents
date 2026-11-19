@@ -1,4 +1,4 @@
-"""Fonctions communes à marquer-valide, tout-verifier, verifier-diff-liste et orchestre.
+"""Fonctions communes aux scripts du kit (bin/) et aux hooks qui lancent init.sh.
 
 Bibliothèque standard seulement. Toute erreur lève une exception : chaque script
 appelant la transforme en refus (échouer fermé).
@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 
 REFERENCE = "origin/main"
 LISTE = "feature_list.json"
@@ -37,6 +38,24 @@ def racine_depot(cwd):
 
 def lire_a_la_reference(depot, reference, chemin):
     return git(["show", reference + ":" + chemin], depot)
+
+
+def lancer_init(depot, args, delai, reference=REFERENCE):
+    """Lance init.sh tel qu'il est à la référence (git show), jamais la copie de travail :
+    init.sh appartient à la référence, comme tests/acceptance/. Copié dans un fichier
+    temporaire hors du dépôt, exécuté avec le dépôt comme dossier courant.
+    Lève Erreur s'il est absent de la référence ; subprocess.TimeoutExpired au délai."""
+    try:
+        contenu = git(["show", reference + ":init.sh"], depot, binaire=True)
+    except Erreur:
+        raise Erreur("init.sh absent de " + reference)
+    with tempfile.TemporaryDirectory(prefix="kit-init-") as tmp:
+        script = os.path.join(tmp, "init.sh")
+        with open(script, "wb") as f:
+            f.write(contenu)
+        os.chmod(script, 0o700)
+        return subprocess.run([script] + list(args), cwd=depot, capture_output=True,
+                              text=True, timeout=delai)
 
 
 def valider_liste(donnees):

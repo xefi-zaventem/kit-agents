@@ -108,9 +108,26 @@ class TestFinDeSession(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("blocage 1 sur 3", r.stderr)
 
-    def test_relecture_lancee_par_orchestre(self):
-        self.assertEqual(self.stop().returncode, 2)  # rien de fait : bloque
-        self.assertEqual(self.stop(env={"KIT_SESSION": "relecture"}).returncode, 0)
+    def test_sans_diff_rien_a_controler(self):
+        # Ex. la relecture /code-review, dans un checkout propre de la référence.
+        self.assertEqual(self.stop().returncode, 0)  # copie de travail = référence
+
+    def test_kit_session_n_exempte_plus_rien(self):
+        ecrire(self.depot, "app/f001.py", "x = 1\n")  # diff sans progression : doit bloquer
+        r = self.stop(env={"KIT_SESSION": "relecture"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("claude-progress.txt", r.stderr)
+
+    def test_init_modifie_par_l_agent_non_execute(self):
+        self.travail_correct()
+        ecrire(self.depot, "RAPIDE_KO", "")  # l'init.sh de la référence échoue sur --rapide
+        ecrire(self.depot, "init.sh", "#!/bin/sh\ntouch EXECUTE_PAR_LE_HOOK\nexit 0\n",
+               executable=True)
+        r = self.stop()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("init.sh --rapide", r.stderr)
+        self.assertIn("init.sh modifié", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.depot, "EXECUTE_PAR_LE_HOOK")))
 
     def test_le_hook_plante(self):
         # Pas de dépôt git : erreur interne, la fin est bloquée (code 2).

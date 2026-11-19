@@ -2,10 +2,11 @@
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 
-from outils import chemin, git, lancer, lire
+from outils import KIT, chemin, creer_depot, ecrire, fonctionnalite, git, lancer, lire
 
 SCRIPT = "bin/installer"
 
@@ -94,6 +95,41 @@ class TestInstaller(unittest.TestCase):
         reglages = json.loads(lire(chemin("modeles"), "settings-produit.json"))
         self.assertEqual(reglages["permissions"]["disableBypassPermissionsMode"], "disable")
         self.assertFalse(reglages["sandbox"]["allowUnsandboxedCommands"])
+
+    def test_init_sh_et_reglages_proteges(self):
+        reglages = json.loads(lire(chemin("modeles"), "settings-produit.json"))
+        deny = reglages["permissions"]["deny"]
+        for regle in ("Edit(init.sh)", "Edit(.claude/**)", "Edit(~/.claude/**)"):
+            self.assertIn(regle, deny)
+        self.assertFalse([r for r in deny if r.startswith("Write(")])  # sans effet (doc)
+        for chemin_protege in ("init.sh", ".claude", "~/.claude"):
+            self.assertIn(chemin_protege, reglages["sandbox"]["filesystem"]["denyWrite"])
+
+    def etape_ci(self, ci, nom):
+        """Corps du « run: | » de l'étape <nom> du modèle de CI (sans dépendre de PyYAML)."""
+        lignes = ci.splitlines()
+        debut = next(i for i, l in enumerate(lignes) if nom in l) + 2
+        corps = []
+        for l in lignes[debut:]:
+            if not l.startswith(" " * 10):
+                break
+            corps.append(l[10:])
+        return "\n".join(corps) + "\n"
+
+    def test_ci_rouge_si_init_sh_differe_de_la_reference(self):
+        self.assertEqual(self.installer().returncode, 0)
+        script = self.etape_ci(lire(self.depot, ".github/workflows/tests.yml"),
+                               "Tests d'acceptation")
+        projet = os.path.join(self.tmp.name, "projet-ci")
+        os.makedirs(projet)
+        depot = creer_depot(projet, [fonctionnalite("F001", ["app/"])])
+        os.symlink(KIT, os.path.join(depot, "kit"))
+        env = dict(os.environ, GITHUB_REF="refs/heads/agent/F001")
+        ci = lambda: subprocess.run(["bash", "-e", "-c", script], cwd=depot, env=env,
+                                    capture_output=True, text=True)
+        self.assertEqual(ci().returncode, 0, ci().stderr)
+        ecrire(depot, "init.sh", "#!/bin/sh\nexit 0\n", executable=True)
+        self.assertNotEqual(ci().returncode, 0)
 
 
 if __name__ == "__main__":

@@ -5,9 +5,11 @@ Usage : tests/essai-bout-en-bout <dossier vide> [--modele haiku] [--sans-sandbox
 
 Crée dans <dossier> un dépôt nu (origin) et un dépôt de travail, installe le kit
 avec --destination, puis lance orchestre (--ci locale : tout-verifier remplace la
-CI). Trois fonctionnalités indépendantes de quelques lignes : F001 et F002 doivent
-être validées et fusionnées ; F003 a un test volontairement rouge et ne doit
-jamais passer à « passes: true ».
+CI), qui ne fusionne rien (D29), puis « orchestre fusionner » comme le pilote.
+Trois fonctionnalités indépendantes de quelques lignes : F001 et F002 doivent être
+validées ; sont fusionnées exactement celles que le récapitulatif classe « prêtes »
+(une relecture qui ajoute du texte après « (none) » laisse la branche à relire) ;
+F003 a un test volontairement rouge et ne doit jamais passer à « passes: true ».
 
 --sans-sandbox : seulement sur un poste où le sandbox ne peut pas démarrer (par
 exemple socat absent) ; les autres garde-fous restent actifs. À noter dans le
@@ -112,14 +114,26 @@ def principal():
     r = subprocess.run([os.path.join(dest, "bin", "orchestre"), "--depot", depot,
                         "--ci", "locale", "--modele", a.modele])
     git(depot, "fetch", "-q", "origin")
+    seul = json.loads(git(depot, "show", "origin/main:feature_list.json"))["fonctionnalites"]
+    rien_fusionne = [x["id"] for x in seul if x["passes"]] == ["F000"]
+    print("orchestre seul n'a rien fusionné :", rien_fusionne)
+    m = subprocess.run([os.path.join(dest, "bin", "orchestre"), "fusionner", "--depot", depot,
+                        "--ci", "locale"])
+    git(depot, "fetch", "-q", "origin")
     passes = {x["id"]: x["passes"] for x in json.loads(
         git(depot, "show", "origin/main:feature_list.json"))["fonctionnalites"]}
     print("passes sur origin/main :", passes)
     v = subprocess.run([os.path.join(dest, "bin", "tout-verifier")], cwd=depot,
                        capture_output=True, text=True)
     print(v.stdout + v.stderr)
-    attendu = {"F000": True, "F001": True, "F002": True, "F003": False}
-    ok = r.returncode == 0 and passes == attendu and v.returncode == 0
+    recaps = sorted(f for f in os.listdir(os.path.join(depot, ".kit"))
+                    if f.startswith("recapitulatif-") and f.endswith(".json"))
+    with open(os.path.join(depot, ".kit", recaps[-1]), encoding="utf-8") as fl:
+        pretes = {b["id"] for b in json.load(fl)["branches"] if b["etat"] == "prête"}
+    print("prêtes :", sorted(pretes))
+    attendu = {"F000": True, "F001": "F001" in pretes, "F002": "F002" in pretes, "F003": False}
+    ok = (r.returncode == 0 and m.returncode == 0 and rien_fusionne and passes == attendu
+          and pretes and "F003" not in pretes and v.returncode == 0)
     print("ESSAI DE BOUT EN BOUT :", "RÉUSSI" if ok else "ÉCHEC")
     return 0 if ok else 1
 
