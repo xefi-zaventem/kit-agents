@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""installer — installe le kit pour un dépôt de projet (methode/architecture.md §4.6).
+
+Usage :
+  installer --depot <dépôt du projet> --regles <fichier de règles de la machine>
+            --organisation <organisation GitHub du kit>
+            [--destination <dossier>] [--version <étiquette>]
+
+1. Copie hooks/, bin/ et modeles/prompts/ dans la destination (/opt/kit par
+   défaut, hors du dépôt), en lecture seule.
+2. Écrit <dépôt>/.claude/settings.json à partir de modeles/settings-produit.json,
+   avec les chemins de la destination et du fichier de règles.
+3. Écrit <dépôt>/.kit-version (par défaut : v<majeure>.<mineure> de VERSION).
+4. Remplit le modèle de CI dans <dépôt>/.github/workflows/tests.yml.
+5. Ajoute à .gitignore « .kit/ » et « .claude/worktrees/ », et à .gitattributes
+   « claude-progress.txt merge=union » (deux branches parallèles ajoutent chacune
+   leur entrée sans conflit).
+
+Il ne commit rien. /opt/kit demande les droits de l'opérateur ; --destination
+sert aux essais sans droit administrateur. Échoue fermé : rien n'est écrit dans
+le dépôt si une vérification échoue avant l'écriture.
+"""
+import argparse
+import json
+import os
+import shutil
+import stat
+import sys
+
+KIT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+DOSSIERS = ["hooks", "bin", os.path.join("modeles", "prompts")]
+
+
+def erreur(message):
+    sys.stderr.write("installer : " + message + "\n")
+    sys.exit(2)
+
+
+def rendre_modifiable(dossier):
+    for racine, dossiers, fichiers in os.walk(dossier):
+        os.chmod(racine, 0o755)
+        for f in fichiers:
+            os.chmod(os.path.join(racine, f), 0o644)
+
+
+def rendre_lecture_seule(dossier):
+    for racine, dossiers, fichiers in os.walk(dossier, topdown=False):
+        for f in fichiers:
+            chemin = os.path.join(racine, f)
+            executable = os.stat(chemin).st_mode & stat.S_IXUSR
+            os.chmod(chemin, 0o555 if executable else 0o444)
+        os.chmod(racine, 0o555)
+
+
+def copier_kit(destination):
+    os.makedirs(destination, exist_ok=True)
+    if os.path.isdir(os.path.join(destination, "modeles")):
+        os.chmod(os.path.join(destination, "modeles"), 0o755)
+    for nom in DOSSIERS:
+        cible = os.path.join(destination, nom)
+        if os.path.exists(cible):
+            rendre_modifiable(cible)
+            shutil.rmtree(cible)
+        shutil.copytree(os.path.join(KIT, nom), cible,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".gitkeep"))
+    shutil.copy2(os.path.join(KIT, "VERSION"), os.path.join(destination, "VERSION"))
+    for nom in DOSSIERS:
+        rendre_lecture_seule(os.path.join(destination, nom))
+    os.chmod(os.path.join(destination, "modeles"), 0o555)
+
+
+def ajouter_lignes(chemin, lignes):
+    existant = ""
+    if os.path.exists(chemin):
+        with open(chemin, encoding="utf-8") as f:
+            existant = f.read()
+    manquantes = [l for l in lignes if l not in existant.splitlines()]
+    if manquantes:
+        with open(chemin, "a", encoding="utf-8") as f:
+            if existant and not existant.endswith("\n"):
+                f.write("\n")
+            f.write("\n".join(manquantes) + "\n")
+
+
+def principal():
+    p = argparse.ArgumentParser(description="Installe le kit pour un dépôt de projet.")
+    p.add_argument("--depot", required=True)
+    p.add_argument("--regles", required=True)
+    p.add_argument("--organisation", required=True)
+    p.add_argument("--destination", default="/opt/kit")
+    p.add_argument("--version")
+    a = p.parse_args()
+
+    depot = os.path.realpath(a.depot)
+    destination = os.path.realpath(a.destination)
+    regles = os.path.realpath(a.regles)
+    if not os.path.isdir(os.path.join(depot, ".git")):
+        erreur("pas un dépôt git : " + depot)
+    if destination == depot or destination.startswith(depot + os.sep):
+        erreur("la destination doit être hors du dépôt (sinon l'agent pourrait réécrire "
+               "les hooks puis les lancer hors sandbox)")
+    with open(regles, encoding="utf-8") as f:
+        json.load(f)  # règles illisibles : on s'arrête avant d'écrire
+    with open(os.path.join(KIT, "VERSION"), encoding="utf-8") as f:
+        version_kit = f.read().strip()
+    version = a.version or "v" + ".".join(version_kit.split(".")[:2])
+    with open(os.path.join(KIT, "modeles", "settings-produit.json"), encoding="utf-8") as f:
+        reglages = f.read()
+    reglages = reglages.replace("/etc/kit/garde-commandes.json", regles)
+    reglages = reglages.replace("/opt/kit/", destination + "/")
+    json.loads(reglages)
+    with open(os.path.join(KIT, "modeles", "ci", "tests.yml"), encoding="utf-8") as f:
+        ci = f.read()
+    ci = ci.replace("<organisation>", a.organisation)
+    ci = ci.replace("<étiquette de .kit-version>", version)
+
+    copier_kit(destination)
+    os.makedirs(os.path.join(depot, ".claude"), exist_ok=True)
+    with open(os.path.join(depot, ".claude", "settings.json"), "w", encoding="utf-8") as f:
+        f.write(reglages)
+    with open(os.path.join(depot, ".kit-version"), "w", encoding="utf-8") as f:
+        f.write(version + "\n")
+    os.makedirs(os.path.join(depot, ".github", "workflows"), exist_ok=True)
+    with open(os.path.join(depot, ".github", "workflows", "tests.yml"), "w", encoding="utf-8") as f:
+        f.write(ci)
+    ajouter_lignes(os.path.join(depot, ".gitignore"), [".kit/", ".claude/worktrees/"])
+    ajouter_lignes(os.path.join(depot, ".gitattributes"), ["claude-progress.txt merge=union"])
+    print("installer : kit %s installé dans %s ; dépôt %s configuré (.kit-version = %s). "
+          "Rien n'est commité." % (version_kit, destination, depot, version))
+
+
+if __name__ == "__main__":
+    try:
+        principal()
+    except SystemExit:
+        raise
+    except Exception as e:
+        erreur("%s : %s" % (type(e).__name__, e))

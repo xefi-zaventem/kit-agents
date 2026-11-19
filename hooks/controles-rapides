@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""controles-rapides — hook PostToolUse sur Write, Edit, MultiEdit, NotebookEdit.
+
+Lance « ./init.sh --controles <fichier> » à la racine du dépôt : lint et format du
+fichier modifié, avec les outils choisis par le projet (docs/adaptation-du-kit.md).
+L'échec est renvoyé à l'agent (code 2 : la doc précise qu'en PostToolUse ce code
+ne peut pas annuler l'écriture, il montre la sortie à l'agent).
+
+ÉCHOUER FERMÉ : init.sh absent, délai dépassé ou erreur interne = échec signalé.
+Un fichier hors du dépôt n'est pas contrôlé.
+"""
+import json
+import os
+import subprocess
+import sys
+
+DELAI = 90
+
+
+def echec(message):
+    sys.stderr.write("controles-rapides : " + message.rstrip() + "\n"
+                     "Corrige le fichier avant de continuer.\n")
+    sys.exit(2)
+
+
+def principal():
+    try:
+        donnees = json.load(sys.stdin)
+    except Exception:
+        echec("entrée illisible")
+    entree = donnees.get("tool_input") or {}
+    chemin = entree.get("file_path") or entree.get("notebook_path") or ""
+    cwd = donnees.get("cwd") or os.getcwd()
+    if not chemin:
+        echec("chemin du fichier absent de l'entrée")
+    chemin = os.path.realpath(os.path.join(cwd, chemin))
+    r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        echec("pas de dépôt git dans " + cwd)
+    racine = os.path.realpath(r.stdout.strip())
+    if not chemin.startswith(racine + os.sep):
+        sys.exit(0)
+    init = os.path.join(racine, "init.sh")
+    if not os.access(init, os.X_OK):
+        echec("init.sh absent ou non exécutable : contrôles impossibles")
+    try:
+        r = subprocess.run([init, "--controles", os.path.relpath(chemin, racine)],
+                           cwd=racine, capture_output=True, text=True, timeout=DELAI)
+    except subprocess.TimeoutExpired:
+        echec("délai dépassé (%d s)" % DELAI)
+    if r.returncode != 0:
+        echec("échec de « init.sh --controles » (code %d) :\n%s"
+              % (r.returncode, (r.stdout + r.stderr)[-3000:]))
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    try:
+        principal()
+    except SystemExit:
+        raise
+    except Exception as e:
+        echec("erreur interne (" + type(e).__name__ + ")")

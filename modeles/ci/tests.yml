@@ -1,0 +1,19 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Kit à la version du projet (.kit-version)
+        uses: actions/checkout@v4
+        with: { repository: "<organisation>/kit-agents", ref: "<étiquette de .kit-version>", path: kit }
+      - name: Tests d'acceptation et liste inchangés (sauf « passes »)
+        run: |
+          BASE=origin/main
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then BASE=HEAD~1; fi
+          git diff --exit-code "$BASE" -- tests/acceptance/
+          python3 kit/bin/verifier-diff-liste "$BASE" feature_list.json
+      - name: Tous les contrôles
+        run: ./init.sh --ci && ./kit/bin/tout-verifier

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["projet", "version_kit", "fonctionnalites"],
+  "properties": {
+    "projet": { "type": "string" },
+    "version_kit": { "type": "string" },
+    "fonctionnalites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "besoin", "jalon", "priorite", "category", "description",
+                     "steps", "test", "touches", "depends_on", "passes"],
+        "additionalProperties": false,
+        "properties": {
+          "id":          { "type": "string", "pattern": "^F[0-9]{3}$" },
+          "besoin":      { "type": "array", "items": { "type": "integer" },
+                           "description": "N° des besoins du projet couverts" },
+          "jalon":       { "type": "string", "description": "S1, S2… ou équivalent" },
+          "priorite":    { "type": "integer", "minimum": 1 },
+          "category":    { "enum": ["fonctionnel", "interface", "securite", "donnees", "infra"] },
+          "description": { "type": "string", "maxLength": 200 },
+          "steps":       { "type": "array", "minItems": 1, "items": { "type": "string" },
+                           "description": "Étapes de vérification : entrée, action, résultat attendu" },
+          "test":        { "type": "string", "description": "Chemin du test d'acceptation e2e" },
+          "touches":     { "type": "array", "items": { "type": "string" },
+                           "description": "Dossiers que la fonctionnalité a le droit de modifier" },
+          "depends_on":  { "type": "array", "items": { "type": "string" } },
+          "attribue_a":  { "type": ["string", "null"], "description": "Rempli par l'orchestrateur" },
+          "passes":      { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

@@ -9,11 +9,8 @@
     "disableBypassPermissionsMode": "disable",
     "deny": [
       "Edit(tests/acceptance/**)",
-      "Write(tests/acceptance/**)",
       "Edit(feature_list.json)",
-      "Write(feature_list.json)",
       "Edit(.claude/**)",
-      "Write(.claude/**)",
       "Read(.env*)",
       "Read(**/secrets/**)"
     ]
@@ -41,7 +38,7 @@
       ]
     },
     "excludedCommands": [
-      "/opt/kit/bin/marquer-valide"
+      "/opt/kit/bin/marquer-valide *"
     ]
   },
   "hooks": {
@@ -54,6 +51,52 @@
             "command": "/opt/kit/hooks/garde-commandes /etc/kit/garde-commandes.json",
             "timeout": 10,
             "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/kit/hooks/verrou-ressources /etc/kit/garde-commandes.json",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/kit/hooks/garde-secrets",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/kit/hooks/controles-rapides",
+            "timeout": 120,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/kit/hooks/fin-de-session",
+            "timeout": 600
           }
         ]
       }
