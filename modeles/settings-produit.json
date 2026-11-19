@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Edit(tests/acceptance/**)",
+      "Write(tests/acceptance/**)",
+      "Edit(feature_list.json)",
+      "Write(feature_list.json)",
+      "Edit(.claude/**)",
+      "Write(.claude/**)",
+      "Read(.env*)",
+      "Read(**/secrets/**)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true,
+    "filesystem": {
+      "denyWrite": [
+        "tests/acceptance",
+        "feature_list.json"
+      ],
+      "denyRead": [
+        "**/secrets"
+      ]
+    },
+    "network": {
+      "allowedDomains": [
+        "pypi.org",
+        "files.pythonhosted.org",
+        "github.com",
+        "objects.githubusercontent.com",
+        "registry.npmjs.org"
+      ]
+    },
+    "excludedCommands": [
+      "/opt/kit/bin/marquer-valide"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/kit/hooks/garde-commandes /etc/kit/garde-commandes.json",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""garde-commandes — hook PreToolUse du kit-agents.
+
+Usage (dans les réglages Claude Code) :
+    /opt/kit/hooks/garde-commandes /etc/kit/garde-commandes.json
+
+Lit l'appel d'outil (JSON) sur l'entrée standard et refuse, avec le code 2, ce que
+les règles de la machine interdisent. Le message d'erreur est renvoyé à l'agent.
+
+Principe : ÉCHOUER FERMÉ. Toute erreur interne (JSON illisible, règles absentes,
+exception) produit un refus, jamais une autorisation.
+
+Ce hook est un garde-fou contre l'erreur, pas une barrière contre un agent
+malveillant : un contenu encodé ou téléchargé puis exécuté peut lui échapper.
+Il complète les autres garde-fous déclarés dans ENVIRONNEMENT.md.
+"""
+import json
+import os
+import re
+import shlex
+import sys
+
+OUTILS_ECRITURE = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+ENVELOPPES = {"sudo", "env", "nohup", "timeout", "nice", "ionice", "time",
+              "exec", "command", "builtin", "xargs", "stdbuf"}
+SEPARATEURS = re.compile(r"\|\||&&|;|\||&|\n|\$\(|`|\)")
+DEBUT = r"(?:^|[\s;&|(`'\"/])"
+FIN_NOM = r"(?=$|[\s;&|)`'\"])"
+EXT_SCRIPTS = (".sh", ".bash", ".zsh", ".py", ".pl", ".rb", ".service",
+               ".timer", ".socket", ".path", ".mount")
+
+
+def refuser(raison):
+    sys.stderr.write(
+        "Refusé par garde-commandes : " + raison + "\n"
+        "Ne contourne pas ce refus. Si l'action est vraiment nécessaire, écris-la sous "
+        "« DEMANDE HUMAINE » dans claude-progress.txt (commande exacte et raison), "
+        "puis continue une autre partie du travail.\n")
+    sys.exit(2)
+
+
+def charger_regles(chemin):
+    with open(chemin, encoding="utf-8") as f:
+        regles = json.load(f)
+    regles["_proteges"] = [re.compile(p) for p in regles.get("chemins_proteges", [])]
+    compilees = []
+    for r in regles.get("commandes", []):
+        compilees.append({
+            "re": re.compile(DEBUT + "(" + r["nom"] + ")" + FIN_NOM +
+                             r"(?P<args>[^;&|\n`'\"]*)", re.M),
+            "si_args": re.compile(r["si_args"]) if r.get("si_args") else None,
+            "sauf_args": re.compile(r["sauf_args"]) if r.get("sauf_args") else None,
+            "valeurs": r.get("valeurs"),
+            "raison": r["raison"],
+        })
+    regles["_commandes"] = compilees
+    regles["_textes"] = [(re.compile(m["motif"], re.M), m["raison"])
+                         for m in regles.get("motifs_texte", [])]
+    regles["_lecture"] = set(regles.get("lecture_seule", []))
+    regles["_copie"] = set(regles.get("copie_depuis_protege", []))
+    return regles
+
+
+def est_protege(regles, texte):
+    return any(p.search(texte) for p in regles["_proteges"])
+
+
+def analyser_texte(regles, texte):
+    """Cherche partout dans le texte (y compris entre guillemets et dans les
+    documents intégrés) les commandes interdites."""
+    for motif, raison in regles["_textes"]:
+        if motif.search(texte):
+            refuser(raison)
+    for r in regles["_commandes"]:
+        for m in r["re"].finditer(texte):
+            args = m.group("args")
+            if r["si_args"] and not r["si_args"].search(args):
+                continue
+            if r["sauf_args"] and r["sauf_args"].search(args):
+                continue
+            v = r["valeurs"]
+            if v:
+                trouvees = re.findall(v["extraire"], args)
+                if trouvees and all(t in v["autorisees"] for t in trouvees):
+                    continue
+                if not trouvees and not v.get("obligatoire", True):
+                    continue
+                refuser(r["raison"] + " (valeurs trouvées : " +
+                        (", ".join(trouvees) or "aucune") + ")")
+            refuser(r["raison"])
+
+
+def jetons(segment):
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError:
+        return segment.split()
+
+
+def nom_commande(tok):
+    i = 0
+    while i < len(tok):
+        t = tok[i]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):
+            i += 1
+            continue
+        base = os.path.basename(t)
+        if base in ENVELOPPES:
+            i += 1
+            while i < len(tok) and (tok[i].startswith("-") or re.match(r"^[\d.]+[smhd]?$", tok[i])):
+                i += 1
+            continue
+        return base, tok[i + 1:]
+    return "", []
+
+
+def verifier_chemins_bash(regles, commande, cwd):
+    dossier_protege = est_protege(regles, (cwd or "") + "/")
+    for seg in SEPARATEURS.split(commande):
+        if not seg.strip():
+            continue
+        tok = jetons(seg)
+        nom, args = nom_commande(tok)
+        mentionne = est_protege(regles, seg)
+        if nom in ("cd", "pushd") and args:
+            dossier_protege = est_protege(regles, args[-1].rstrip("/") + "/")
+            continue
+        if not mentionne and not dossier_protege:
+            continue
+        if nom in regles["_lecture"]:
+            pos = seg.find(">")
+            if pos >= 0 and (est_protege(regles, seg[pos:]) or dossier_protege):
+                refuser("redirection vers un chemin protégé")
+            continue
+        if nom in regles["_copie"]:
+            cibles = [a for a in args if not a.startswith("-")]
+            if cibles and not est_protege(regles, cibles[-1]) and not dossier_protege:
+                continue
+            refuser("copie vers un chemin protégé")
+        refuser("commande « " + (nom or seg.strip()[:40]) +
+                " » sur un chemin protégé (lecture seule permise : " +
+                ", ".join(sorted(regles["_lecture"])) + ")")
+
+
+def est_script(chemin, contenu):
+    return (chemin.endswith(EXT_SCRIPTS) or contenu.lstrip().startswith("#!")
+            or "/etc/cron" in chemin or "/etc/systemd/" in chemin)
+
+
+def principal():
+    if len(sys.argv) != 2:
+        refuser("usage : garde-commandes <fichier de règles>")
+    try:
+        regles = charger_regles(sys.argv[1])
+    except Exception as e:  # règles absentes ou illisibles : on bloque
+        refuser("règles illisibles (" + type(e).__name__ + ")")
+    try:
+        donnees = json.load(sys.stdin)
+    except Exception:
+        refuser("entrée illisible")
+
+    verrou = regles.get("verrou_donnees_reelles")
+    if verrou and os.path.exists(verrou):
+        refuser("fenêtre données réelles ouverte : aucune action d'agent n'est permise")
+
+    outil = donnees.get("tool_name", "")
+    entree = donnees.get("tool_input") or {}
+
+    if outil == "Bash":
+        commande = entree.get("command", "")
+        analyser_texte(regles, commande)
+        verifier_chemins_bash(regles, commande, donnees.get("cwd", ""))
+    elif outil in OUTILS_ECRITURE:
+        chemin = entree.get("file_path") or entree.get("notebook_path") or ""
+        reel = os.path.realpath(chemin) if chemin else ""
+        if chemin and (est_protege(regles, chemin) or est_protege(regles, reel)):
+            refuser("écriture dans un chemin protégé : " + chemin)
+        contenu = entree.get("content") or entree.get("new_string") or ""
+        for e in entree.get("edits") or []:
+            contenu += "\n" + (e.get("new_string") or "")
+        if est_script(chemin, contenu):
+            analyser_texte(regles, contenu)
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    try:
+        principal()
+    except SystemExit:
+        raise
+    except Exception as e:
+        refuser("erreur interne du garde (" + type(e).__name__ + ")")
