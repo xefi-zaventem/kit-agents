@@ -193,6 +193,8 @@ class TestOrchestre(unittest.TestCase):
         self.assertEqual(len(relectures), 2)
         for a in relectures:  # checkout propre de origin/main, pas le checkout principal
             self.assertTrue(a["propre"])
+            consigne = a["args"][a["args"].index("--append-system-prompt") + 1]
+            self.assertIn("dernière ligne de ta réponse est le verdict seul", consigne)
             self.assertNotEqual(os.path.realpath(a["cwd"]), os.path.realpath(self.depot))
         self.assertIn("agent/F003", git(self.depot, "branch", "--list", "agent/*"))
 

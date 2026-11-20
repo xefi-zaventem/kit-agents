@@ -8,3 +8,12 @@ DEMANDE HUMAINE : installer socat sur le poste (sandbox) ; ajouter marquer-valid
 TROP GROS : non
 PROCHAINE ÉTAPE : relecture de la demande de fusion par le pilote, fusion, étiquette v1.0 sur main
 COÛT : essai de bout en bout environ 0,24 $ (session de construction non mesurée)
+
+=== 2026-11-20 15:57 | kit v1.0 (phase 0), fin de la PR #1 | session générateur | modèle Opus 5.5 ===
+FAIT : correction 1 du lot (consigne de relecture d'orchestre : verdict seul sur la dernière ligne ; règle de lecture inchangée ; assertion dans test_orchestre) ; CHANGELOG : correction 1 et essai de bout en bout du pilote (20/11, avec sandbox, haiku, réussi)
+ÉTAT : en attente de la CI de la PR #1 (localement, 12 tests sur 18 de test_orchestre verts ; les 6 autres demandent Docker, absent des sessions)
+TEST CONTESTÉ : aucun
+DEMANDE HUMAINE : aucune
+TROP GROS : non
+PROCHAINE ÉTAPE : relecture neuve de la PR #1, puis fusion par le pilote et étiquette v1.0
+COÛT : session non mesurée ; essai de bout en bout du pilote non relevé

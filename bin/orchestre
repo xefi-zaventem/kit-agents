@@ -67,9 +67,9 @@ VIDES = ("aucun", "aucune", "non", "")
 HORS_TOUCHES = ("claude-progress.txt", kc.LISTE)
 VERDICTS_OK = ("(none)", "VERDICT : AUCUN BLOQUANT")
 CONSIGNE_RELECTURE = (
-    "Après la relecture, termine ta réponse par une seule ligne : « VERDICT : AUCUN BLOQUANT » "
-    "si rien ne touche le fonctionnement, la sécurité ou les contrats, sinon « VERDICT : BLOQUANT ». "
-    "Ignore le style.")
+    "Après la relecture, la dernière ligne de ta réponse est le verdict seul, sans rien "
+    "d'autre sur la ligne ni après : « VERDICT : AUCUN BLOQUANT » si rien ne touche le "
+    "fonctionnement, la sécurité ou les contrats, sinon « VERDICT : BLOQUANT ». Ignore le style.")
 DELAI_CI = 1800
 PRETE, A_RELIRE = "prête", "à relire"
 

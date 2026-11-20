@@ -110,6 +110,13 @@ le poste et sudo est exclu pendant cette phase. Permissions et hooks restaient a
   mécanismes gardés (`init.sh --controles/--rapide/--ci`, `tests/acceptance/kit.json`,
   `claude-progress.txt merge=union`) ; `07` §5 : `system/init` ne liste pas les hooks, `(none)` de
   `/code-review -p`, règle de fusion D29 ; `06` §2.2 et §2.10 alignés.
+- Consigne de relecture d'`orchestre` : la dernière ligne de la réponse est le verdict seul, sans
+  rien d'autre sur la ligne ni après. La règle de lecture ne change pas (dernière ligne non vide ;
+  tout doute = « à relire »). Test : assertion sur la consigne dans
+  `test_deux_en_parallele_pretes_puis_fusionnees_par_le_pilote`.
+- Essai de bout en bout sur cet état, lancé par le pilote le 20/11/2026, **avec le sandbox** (sans
+  `--sans-sandbox`), modèle haiku : « ESSAI DE BOUT EN BOUT : RÉUSSI ». Détail F001/F002/F003 et
+  coût non relevés.
 
 ## 0.0.0-pre
 
