@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from outils import creer_depot, ecrire, fonctionnalite, lancer, lire, test_qui_importe
+from outils import avec_docker, creer_depot, ecrire, fonctionnalite, lancer, lire, test_qui_importe
 
 SCRIPT = "bin/tout-verifier"
 
@@ -25,17 +25,20 @@ class TestToutVerifier(unittest.TestCase):
     def verifier(self):
         return lancer([SCRIPT], cwd=self.depot)
 
+    @avec_docker
     def test_valide_et_vert(self):
         r = self.verifier()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("1 test(s) d'acceptation verts", r.stdout)
 
+    @avec_docker
     def test_regression_sur_une_fonctionnalite_validee(self):
         ecrire(self.depot, "app/f001.py", "def f001():\n    return 0\n")
         r = self.verifier()
         self.assertEqual(r.returncode, 1)
         self.assertIn("ÉCHEC F001", r.stdout)
 
+    @avec_docker
     def test_passes_force_sans_code(self):
         liste = json.loads(lire(self.depot, "feature_list.json"))
         liste["fonctionnalites"][1]["passes"] = True  # F002 forcée, pas de code

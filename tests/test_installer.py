@@ -124,12 +124,44 @@ class TestInstaller(unittest.TestCase):
         os.makedirs(projet)
         depot = creer_depot(projet, [fonctionnalite("F001", ["app/"])])
         os.symlink(KIT, os.path.join(depot, "kit"))
-        env = dict(os.environ, GITHUB_REF="refs/heads/agent/F001")
+        env = dict(os.environ, GITHUB_REF="refs/heads/agent/F001", TETE="HEAD",
+                   PILOTE_NOM="essai", PILOTE_COURRIEL="essai@exemple.invalid")
         ci = lambda: subprocess.run(["bash", "-e", "-c", script], cwd=depot, env=env,
                                     capture_output=True, text=True)
         self.assertEqual(ci().returncode, 0, ci().stderr)
         ecrire(depot, "init.sh", "#!/bin/sh\nexit 0\n", executable=True)
         self.assertNotEqual(ci().returncode, 0)
+
+    def test_ci_rouge_si_commit_hors_d28(self):
+        """Constat 3 : le modèle de CI refuse un co-auteur, anthropic.com ou un autre auteur."""
+        self.assertEqual(self.installer().returncode, 0)
+        script = self.etape_ci(lire(self.depot, ".github/workflows/tests.yml"),
+                               "Tests d'acceptation")
+        projet = os.path.join(self.tmp.name, "projet-ci")
+        os.makedirs(projet)
+        depot = creer_depot(projet, [fonctionnalite("F001", ["app/"])])
+        os.symlink(KIT, os.path.join(depot, "kit"))
+        env = dict(os.environ, GITHUB_REF="refs/heads/agent/F001", TETE="HEAD",
+                   PILOTE_NOM="essai", PILOTE_COURRIEL="essai@exemple.invalid")
+        ci = lambda: subprocess.run(["bash", "-e", "-c", script], cwd=depot, env=env,
+                                    capture_output=True, text=True)
+        ecrire(depot, "app/a.py", "a = 1\n")
+        git(depot, "add", "app")  # pas le lien « kit »
+        git(depot, "commit", "-q", "-m", "a")
+        self.assertEqual(ci().returncode, 0, ci().stdout + ci().stderr)
+        for message, auteur in (("b\n\nCo-Authored-By: Claude <noreply@anthropic.com>", None),
+                                ("c (voir anthropic.com)", None),
+                                ("d", "Autre <autre@exemple.invalid>")):
+            git(depot, "reset", "-q", "--hard", "origin/main")
+            ecrire(depot, "app/b.py", "b = 1\n")
+            git(depot, "add", "app")
+            git(depot, "commit", "-q", "-m", message, *(["--author", auteur] if auteur else []))
+            r = ci()
+            self.assertNotEqual(r.returncode, 0, message)
+            self.assertIn("D28", r.stdout, message + r.stderr)
+        self.assertNotEqual(subprocess.run(
+            ["bash", "-e", "-c", script], cwd=depot, capture_output=True, text=True,
+            env=dict(env, PILOTE_NOM="")).returncode, 0)  # pilote non configuré = rouge
 
 
 if __name__ == "__main__":

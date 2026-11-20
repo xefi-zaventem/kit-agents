@@ -9,11 +9,16 @@ jobs:
       - name: Kit à la version du projet (.kit-version)
         uses: actions/checkout@v4
         with: { repository: "<organisation>/kit-agents", ref: "<étiquette de .kit-version>", path: kit }
-      - name: Tests d'acceptation, init.sh et liste inchangés (sauf « passes »)
+      - name: Tests d'acceptation, init.sh et liste inchangés (sauf « passes ») ; D28
         run: |
           BASE=origin/main
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then BASE=HEAD~1; fi
           git diff --exit-code "$BASE" -- tests/acceptance/ init.sh
           python3 kit/bin/verifier-diff-liste "$BASE" feature_list.json
+          python3 kit/bin/verifier-auteurs "$BASE..$TETE" "$PILOTE_NOM" "$PILOTE_COURRIEL"
+        env:
+          TETE: ${{ github.event.pull_request.head.sha || github.sha }}
+          PILOTE_NOM: ${{ vars.KIT_PILOTE_NOM }}
+          PILOTE_COURRIEL: ${{ vars.KIT_PILOTE_COURRIEL }}
       - name: Tous les contrôles
         run: ./init.sh --ci && ./kit/bin/tout-verifier

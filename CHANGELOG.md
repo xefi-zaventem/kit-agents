@@ -118,6 +118,41 @@ le poste et sudo est exclu pendant cette phase. Permissions et hooks restaient a
   `--sans-sandbox`), modèle haiku : « ESSAI DE BOUT EN BOUT : RÉUSSI ». Détail F001/F002/F003 et
   coût non relevés.
 
+### Corrigé après la relecture neuve de la PR #1 (20/11/2026, verdict BLOQUANT)
+
+- **Faux récapitulatif** : `orchestre fusionner` ne prend plus « le dernier fichier de `.kit/` ».
+  `orchestre` affiche l'empreinte sha256 du récapitulatif JSON qu'il écrit ; le pilote la donne à
+  `orchestre fusionner --recapitulatif <empreinte>`, qui ne lit que le fichier de même empreinte. Un
+  fichier déposé par du code de l'agent (test, `init.sh` lancé sur l'hôte) ne porte pas l'empreinte
+  affichée au pilote ; un récapitulatif retouché ne correspond plus. Test :
+  `test_faux_recapitulatif_depose_par_l_agent_non_fusionne`.
+- **`marquer-valide --reference`** : seule une valeur qui se résout en `refs/remotes/origin/main`
+  (`git rev-parse --symbolic-full-name --end-of-options`) est admise (D25) ; une valeur en `-` est
+  refusée avant tout appel à git. Test : `test_reference_autre_que_origin_main_refusee`.
+- **D28 avant chaque push** : `kit_commun.ecarts_d28` parcourt `git log origin/main..<sha>` (auteur,
+  committer, message) et refuse un `Co-Authored-By`, `anthropic.com` ou un auteur autre que le pilote
+  (identité git configurée là où tourne `orchestre`). Appelé par `ci_github` (pas de push),
+  `fusionner_branche` (fusion annulée) et `ci_locale`. Même contrôle dans le modèle de CI par le
+  nouveau `bin/verifier-auteurs` (variables `vars.KIT_PILOTE_NOM`, `vars.KIT_PILOTE_COURRIEL`,
+  absentes = rouge). Tests : `test_d28_refuse_le_push_d_un_commit_co_signe`,
+  `test_ci_rouge_si_commit_hors_d28`.
+- **Erreur sur une branche** (branche `agent/<id>` déjà présente, HEAD détaché) : la branche est « à
+  relire » avec la raison, les autres sont évaluées et le récapitulatif est écrit. Test :
+  `test_erreur_sur_une_branche_n_arrete_pas_le_lot`.
+- **CI locale** : `init.sh` absent de la référence = rouge (n'était pas vérifié) ; `init.sh --ci` hors
+  délai = rouge (arrêtait `orchestre`). Tests : `test_ci_locale_rouge_sans_init_sh`,
+  `test_ci_locale_rouge_au_delai`.
+- Preuve que les hooks sont chargés : un `hook_response` PreToolUse qui porte la marque
+  « garde-commandes : autorisé » (que `garde-commandes` écrit maintenant sur sa sortie quand il
+  laisse passer), et non n'importe quel hook PreToolUse. Test :
+  `test_hook_pre_tool_use_autre_que_garde_commandes_arrete`.
+- Tout signal non vide de `claude-progress.txt` (`TEST CONTESTÉ`, `DEMANDE HUMAINE`, `TROP GROS`,
+  `ÉCHEC FIN DE SESSION`) rend la branche « à relire ». Test : `test_signal_non_vide_a_relire`.
+- Push `HEAD:main` refusé après la fusion locale : retour à `ORIG_HEAD`, branche signalée non
+  fusionnée. Test : `test_push_refuse_annule_la_fusion_locale`.
+- Tests qui demandent Docker : sautés (`skipUnless`) là où Docker manque ; la CI du kit les lance.
+- `tests/essai-bout-en-bout` passe l'empreinte affichée par `orchestre` à `orchestre fusionner`.
+
 ## 0.0.0-pre
 
 - Mise en place du dépôt : méthode, modèles et hook `garde-commandes` (dossier v4).

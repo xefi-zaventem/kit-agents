@@ -1,12 +1,16 @@
 """Aides communes aux tests du kit : dépôts git jetables avec un origin nu local."""
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
+import unittest
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMAGE = "python:3.13-slim"  # image des tests d'exemple (choix des tests du kit seulement)
+# Tests qui lancent un conteneur : sautés (pas en échec) là où Docker manque ; la CI en a.
+avec_docker = unittest.skipUnless(shutil.which("docker"), "Docker absent")
 
 for cle, valeur in {"GIT_AUTHOR_NAME": "essai", "GIT_AUTHOR_EMAIL": "essai@exemple.invalid",
                     "GIT_COMMITTER_NAME": "essai", "GIT_COMMITTER_EMAIL": "essai@exemple.invalid",

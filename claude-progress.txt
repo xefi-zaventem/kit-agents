@@ -17,3 +17,12 @@ DEMANDE HUMAINE : aucune
 TROP GROS : non
 PROCHAINE ÉTAPE : relecture neuve de la PR #1, puis fusion par le pilote et étiquette v1.0
 COÛT : session non mesurée ; essai de bout en bout du pilote non relevé
+
+=== 2026-11-20 17:12 | kit v1.0 (phase 0), relecture neuve de la PR #1 (BLOQUANT) | session générateur (correction) | modèle Opus 5.5 ===
+FAIT : 9 points de la relecture : empreinte du récapitulatif (orchestre fusionner --recapitulatif) ; marquer-valide --reference limité à origin/main ; contrôle D28 avant chaque push et dans le modèle de CI (bin/verifier-auteurs) ; erreur d'évaluation = branche à relire ; CI locale rouge sans init.sh ou hors délai ; preuve des hooks par la marque de garde-commandes ; tout signal non vide = à relire ; push refusé = retour à ORIG_HEAD ; tests Docker sautés sans Docker
+ÉTAT : en attente de la CI de la PR #1 (localement : 90 tests, 74 verts, 16 sautés faute de Docker ; les 10 nouveaux tests sans Docker vérifiés rouges sur l'ancien code)
+TEST CONTESTÉ : aucun
+DEMANDE HUMAINE : poser vars.KIT_PILOTE_NOM et vars.KIT_PILOTE_COURRIEL dans chaque dépôt produit ; refaire l'essai de bout en bout (vérifier que hook_response PreToolUse porte la sortie de garde-commandes)
+TROP GROS : non
+PROCHAINE ÉTAPE : CI verte de la PR #1, nouvelle relecture, puis fusion par le pilote
+COÛT : session non mesurée

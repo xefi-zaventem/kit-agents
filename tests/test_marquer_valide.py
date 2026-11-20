@@ -4,7 +4,8 @@ import os
 import tempfile
 import unittest
 
-from outils import creer_depot, ecrire, fonctionnalite, git, lancer, lire, test_qui_importe
+from outils import (avec_docker, creer_depot, ecrire, fonctionnalite, git, lancer, lire,
+                    test_qui_importe)
 
 MARQUER = "bin/marquer-valide"
 
@@ -48,6 +49,7 @@ class TestMarquerValide(unittest.TestCase):
         return {f["id"]: f["passes"] for f in
                 json.loads(lire(self.depot, "feature_list.json"))["fonctionnalites"]}
 
+    @avec_docker
     def test_test_vert_ecrit_seulement_passes(self):
         ecrire(self.depot, "app/f001.py", "def f001():\n    return 1\n")
         r = self.marquer("F001")
@@ -60,6 +62,7 @@ class TestMarquerValide(unittest.TestCase):
         journal = lire(self.depot, ".kit/journal-validations.log")
         self.assertIn("F001\tvalidee", journal)
 
+    @avec_docker
     def test_test_rouge_n_ecrit_rien(self):
         ecrire(self.depot, "app/f002.py", "def f002():\n    return 3\n")
         r = self.marquer("F002")
@@ -68,6 +71,7 @@ class TestMarquerValide(unittest.TestCase):
         self.assertEqual(lire(self.depot, "feature_list.json"), self.liste_depart)
         self.assertIn("F002\trouge", lire(self.depot, ".kit/journal-validations.log"))
 
+    @avec_docker
     def test_test_modifie_dans_la_copie_de_travail_ignore(self):
         ecrire(self.depot, "app/f002.py", "def f002():\n    return 3\n")
         ecrire(self.depot, "tests/acceptance/test_f002.py", "print('toujours vert')\n")
@@ -77,6 +81,7 @@ class TestMarquerValide(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertFalse(self.passes()["F002"])
 
+    @avec_docker
     def test_code_d_agent_qui_ecrit_pendant_le_test(self):
         ecrire(self.depot, "app/f004.py", CODE_PIRATE)
         r = self.marquer("F004")
@@ -87,6 +92,7 @@ class TestMarquerValide(unittest.TestCase):
         self.assertNotIn("pirate", lire(self.depot, "tests/acceptance/test_f004.py"))
         self.assertTrue(self.passes()["F004"])
 
+    @avec_docker
     def test_code_d_agent_qui_ecrit_sans_se_proteger(self):
         ecrire(self.depot, "app/f005.py",
                "def f005():\n    open('feature_list.json', 'w').write('pirate')\n    return 5\n")
@@ -114,6 +120,20 @@ class TestMarquerValide(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("F002", r.stderr)
 
+    def test_reference_autre_que_origin_main_refusee(self):
+        """Constat 2 : la référence reste origin/main (D25) ; une valeur en « - » n'est
+        jamais passée à git comme option."""
+        ecrire(self.depot, "app/f001.py", "def f001():\n    return 1\n")
+        sortie = os.path.join(self.tmp.name, "ecrit-par-git")
+        for reference in ("HEAD", "agent/essai", "main", "--output=" + sortie, "-h"):
+            r = self.marquer("F001", "--reference", reference)
+            self.assertEqual(r.returncode, 2, reference)
+            self.assertIn("référence refusée", r.stderr, reference)
+        self.assertFalse(os.path.exists(sortie + ":feature_list.json"))
+        self.assertEqual(lire(self.depot, "feature_list.json"), self.liste_depart)
+        r = self.marquer("F001", "--reference", "origin/main", env={"PATH": "/nulle-part"})
+        self.assertNotIn("référence refusée", r.stderr)  # origin/main reste admise
+
     def test_echoue_ferme(self):
         self.assertEqual(self.marquer().returncode, 2)
         self.assertEqual(self.marquer("F9").returncode, 2)
@@ -124,6 +144,7 @@ class TestMarquerValide(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertEqual(lire(self.depot, "feature_list.json"), self.liste_depart)
 
+    @avec_docker
     def test_deux_validations_paralleles_fusionnent_sans_conflit(self):
         ecrire(self.depot, "app/f001.py", "def f001():\n    return 1\n")
         self.assertEqual(self.marquer("F001").returncode, 0)

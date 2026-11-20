@@ -112,13 +112,15 @@ def principal():
     git(depot, "push", "-q", "origin", "main")
 
     r = subprocess.run([os.path.join(dest, "bin", "orchestre"), "--depot", depot,
-                        "--ci", "locale", "--modele", a.modele])
+                        "--ci", "locale", "--modele", a.modele], capture_output=True, text=True)
+    print(r.stdout + r.stderr)
+    empreinte = (r.stdout.split("--recapitulatif ")[-1].split() or [""])[0]
     git(depot, "fetch", "-q", "origin")
     seul = json.loads(git(depot, "show", "origin/main:feature_list.json"))["fonctionnalites"]
     rien_fusionne = [x["id"] for x in seul if x["passes"]] == ["F000"]
     print("orchestre seul n'a rien fusionné :", rien_fusionne)
     m = subprocess.run([os.path.join(dest, "bin", "orchestre"), "fusionner", "--depot", depot,
-                        "--ci", "locale"])
+                        "--ci", "locale", "--recapitulatif", empreinte])
     git(depot, "fetch", "-q", "origin")
     passes = {x["id"]: x["passes"] for x in json.loads(
         git(depot, "show", "origin/main:feature_list.json"))["fonctionnalites"]}

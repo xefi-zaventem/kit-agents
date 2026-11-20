@@ -196,6 +196,7 @@ def principal():
             contenu += "\n" + (e.get("new_string") or "")
         if est_script(chemin, contenu):
             analyser_texte(regles, contenu)
+    print("garde-commandes : autorisé")  # marque lue par orchestre : hooks du kit chargés
     sys.exit(0)
 
 

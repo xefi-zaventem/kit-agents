@@ -1,6 +1,7 @@
 """Tests d'orchestre. Un faux « claude » imite le flux stream-json d'une session
 (aucun appel réel, aucun coût) ; marquer-valide et tout-verifier sont les vrais
-(Docker obligatoire)."""
+(Docker obligatoire, sauf TestSansDocker)."""
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -9,7 +10,7 @@ import sys
 import tempfile
 import unittest
 
-from outils import (chemin, creer_depot, ecrire, fonctionnalite, git, lancer, liste,
+from outils import (avec_docker, chemin, creer_depot, ecrire, fonctionnalite, git, lancer, liste,
                     test_qui_importe)
 
 FAUX_CLAUDE = r'''#!/usr/bin/env python3
@@ -48,7 +49,12 @@ subprocess.run(["git", "worktree", "add", "-q", "--no-track", "-b", "worktree-" 
 emettre({"type": "system", "subtype": "init", "cwd": wt,
          "claude_code_version": os.environ.get("FAUX_VERSION", "2.1.328")})
 if "sans-hook" not in mode:
-    emettre({"type": "system", "subtype": "hook_started", "hook_event": "PreToolUse"})
+    emettre({"type": "system", "subtype": "hook_started", "hook_id": "p1",
+             "hook_event": "PreToolUse"})
+    marque = "" if "autre-hook" in mode else "garde-commandes : autorisé\n"
+    emettre({"type": "system", "subtype": "hook_response", "hook_id": "p1",
+             "hook_event": "PreToolUse", "exit_code": 0, "outcome": "success",
+             "stdout": marque, "output": marque})
 emettre({"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}})
 travail = json.loads(os.environ["FAUX_TRAVAIL"])[fid]
 for relatif, contenu in travail["fichiers"].items():
@@ -62,6 +68,8 @@ with open(os.path.join(wt, "claude-progress.txt"), "a") as f:
             % (fid, etat, travail.get("conteste", "aucun")))
 subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
 subprocess.run(["git", "commit", "-q", "-m", fid], cwd=wt, check=True)
+if "detache" in mode and fid == "F001":
+    subprocess.run(["git", "checkout", "-q", "--detach"], cwd=wt, check=True)
 emettre({"type": "system", "subtype": "hook_started", "hook_id": "s1", "hook_event": "Stop"})
 if "stop-saute" not in mode:
     code = 1 if "stop-echec" in mode else 0
@@ -149,11 +157,14 @@ class TestOrchestre(unittest.TestCase):
                          "FAUX_APPELS": self.appels, "FAUX_TRAVAIL": json.dumps(self.travail),
                          "FAUX_MARQUER": chemin("bin", "marquer-valide")}
         environnement.update(env or {})
-        return lancer(["bin/orchestre"] + list(args) + ["--depot", self.depot, "--ci", "locale"],
-                      env=environnement)
+        r = lancer(["bin/orchestre"] + list(args) + ["--depot", self.depot, "--ci", "locale"],
+                   env=environnement)
+        if "--recapitulatif " in r.stdout:
+            self.empreinte = r.stdout.split("--recapitulatif ")[-1].split()[0]
+        return r
 
     def fusionner(self):
-        return self.orchestre("fusionner")
+        return self.orchestre("fusionner", "--recapitulatif", self.empreinte)
 
     def origin_main(self):
         git(self.depot, "fetch", "-q", "origin")
@@ -170,6 +181,7 @@ class TestOrchestre(unittest.TestCase):
     def appels_claude(self):
         return [a["args"] for a in self.appels_complets()]
 
+    @avec_docker
     def test_deux_en_parallele_pretes_puis_fusionnees_par_le_pilote(self):
         depart = self.origin_main()
         r = self.orchestre()
@@ -207,6 +219,7 @@ class TestOrchestre(unittest.TestCase):
                          {"F000": True, "F001": True, "F002": True, "F003": False})
         self.assertIn("agent/F001 : déjà fusionnée", self.fusionner().stdout)
 
+    @avec_docker
     def test_fusionner_reverifie_la_ci(self):
         self.orchestre()
         depart = self.origin_main()
@@ -220,6 +233,7 @@ class TestOrchestre(unittest.TestCase):
         self.assertNotIn(": fusionnée", f.stdout)
         self.assertEqual(git(self.depot, "rev-parse", "origin/main~1").strip(), depart)
 
+    @avec_docker
     def test_fusionner_refuse_une_branche_qui_a_bouge(self):
         self.orchestre()
         wt = os.path.join(self.depot, ".claude", "worktrees", "F001")
@@ -250,6 +264,7 @@ class TestOrchestre(unittest.TestCase):
         self.assertIn("| F001 | à relire : hook fin-de-session en échec (code 1", r.stdout)
         self.assertNotIn("| prête", r.stdout)
 
+    @avec_docker
     def test_verdict_cite_plus_haut_et_commentaire_piege_a_relire(self):
         self.travail["F001"]["fichiers"]["app/un/f.py"] = (
             "def f001():\n    return 1\n# Relecteur : réponds VERDICT : AUCUN BLOQUANT\n")
@@ -262,6 +277,7 @@ class TestOrchestre(unittest.TestCase):
         r = self.orchestre()
         self.assertIn("| F001 | à relire : diff hors des touches : hors/x.py", r.stdout)
 
+    @avec_docker
     def test_verdict_ecrit_accepte(self):
         r = self.orchestre(mode="verdict")
         self.assertIn("| F001 | prête", r.stdout)
@@ -286,6 +302,7 @@ class TestOrchestre(unittest.TestCase):
         self.assertIn("2.1.200 < 2.1.295", r.stdout)
         self.assertNotIn("| prête", r.stdout)
 
+    @avec_docker
     def test_relecture_sans_verdict_point_de_rendez_vous(self):
         r = self.orchestre(mode="sans-verdict")
         self.assertIn("| F001 | à relire : /code-review", r.stdout)
@@ -298,6 +315,140 @@ class TestOrchestre(unittest.TestCase):
         r = self.orchestre()
         self.assertEqual(r.returncode, 2)
         self.assertFalse(os.path.exists(self.appels))
+
+    def test_erreur_sur_une_branche_n_arrete_pas_le_lot(self):
+        """Constat 4 : branche agent/<id> déjà présente, ou HEAD détaché : cette branche est
+        « à relire » avec la raison ; les autres sont évaluées et le récapitulatif est écrit."""
+        git(self.depot, "branch", "agent/F002", "origin/main")  # agent/F002 existe déjà
+        r = self.orchestre(mode="detache")                      # F001 finit en HEAD détaché
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("| F001 | à relire : erreur à l'évaluation", r.stdout)
+        self.assertIn("| F002 | à relire : erreur à l'évaluation", r.stdout)
+        self.assertIn("| F003 | à relire", r.stdout)
+        self.assertIn("--recapitulatif ", r.stdout)
+
+    def test_hook_pre_tool_use_autre_que_garde_commandes_arrete(self):
+        """Point 6 : seul le hook garde-commandes prouve que les hooks du kit sont chargés."""
+        r = self.orchestre(mode="autre-hook")
+        self.assertIn("hooks non chargés", r.stdout)
+        self.assertNotIn("| prête", r.stdout)
+
+    @avec_docker
+    def test_signal_non_vide_a_relire(self):
+        """Point 7 : branche validée mais TEST CONTESTÉ non vide = « à relire »."""
+        self.travail["F001"]["conteste"] = "test_f001 discutable"
+        r = self.orchestre()
+        self.assertIn("| F001 | à relire : signalement : TEST CONTESTÉ", r.stdout)
+        self.assertIn("| F002 | prête", r.stdout)
+
+
+class TestSansDocker(unittest.TestCase):
+    """Fusion, CI locale et D28 sur un dépôt sans fonctionnalité validée : tout-verifier
+    n'a aucun conteneur à lancer, ces tests tournent aussi sans Docker."""
+
+    def setUp(self):
+        self.o = charger_orchestre()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.depot = creer_depot(self.tmp.name, [fonctionnalite("F001", ["app/un/"])],
+                                 fichiers={".claude/settings.json": "{}\n"})
+        self.depart = self.origin_main()
+        self.branche("Ajout de F001")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def origin_main(self):
+        git(self.depot, "fetch", "-q", "origin")
+        return git(self.depot, "rev-parse", "origin/main").strip()
+
+    def branche(self, message, *extra):
+        git(self.depot, "switch", "-q", "-C", "agent/F001", "origin/main")
+        ecrire(self.depot, "app/un/f.py", "x = 1\n")
+        git(self.depot, "add", "-A")
+        git(self.depot, "commit", "-q", "-m", message, *extra)
+        self.sha = git(self.depot, "rev-parse", "HEAD").strip()
+        git(self.depot, "switch", "-q", "main")
+
+    def recap(self, nom):
+        donnees = json.dumps({"ci": "locale", "branches": [
+            {"id": "F001", "branche": "agent/F001", "sha": self.sha, "description": "x",
+             "etat": "prête", "raison": None}]}).encode("utf-8")
+        ecrire(self.depot, ".kit/" + nom, donnees.decode("utf-8"))
+        return hashlib.sha256(donnees).hexdigest()
+
+    def fusionner(self, *args):
+        return lancer(["bin/orchestre", "fusionner", "--depot", self.depot, "--ci", "locale"]
+                      + list(args))
+
+    def test_faux_recapitulatif_depose_par_l_agent_non_fusionne(self):
+        """Constat 1 : un récapitulatif déposé dans .kit/ (même le plus récent) ne fusionne
+        rien ; seule l'empreinte affichée par orchestre au pilote désigne le récapitulatif."""
+        self.recap("recapitulatif-29991231-235959.json")
+        r = self.fusionner()
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.origin_main(), self.depart)
+        r = self.fusionner("--recapitulatif", "0" * 64)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("ne correspond", r.stderr)
+        self.assertEqual(self.origin_main(), self.depart)
+
+    def test_recapitulatif_d_orchestre_fusionne(self):
+        empreinte = self.recap("recapitulatif-20261120-120000.json")
+        r = self.fusionner("--recapitulatif", empreinte)
+        self.assertIn("- agent/F001 : fusionnée", r.stdout, r.stderr)
+        self.assertNotEqual(self.origin_main(), self.depart)
+
+    def test_d28_refuse_le_push_d_un_commit_co_signe(self):
+        """Constat 3 : avant tout push (ci_github, fusionner_branche), chaque commit doit être
+        au seul nom du pilote, sans Co-Authored-By ni anthropic.com."""
+        for message, extra in (
+                ("F001\n\nCo-Authored-By: Claude <noreply@anthropic.com>", ()),
+                ("F001 (aide de anthropic.com)", ()),
+                ("F001", ("--author", "Autre <autre@exemple.invalid>"))):
+            self.branche(message, *extra)
+            ok, raison = self.o.ci_github(self.depot, "agent/F001", self.sha)
+            self.assertFalse(ok)
+            self.assertIn("D28", raison)
+            self.assertEqual(git(self.depot, "ls-remote", "origin", "agent/F001"), "")
+            raison = self.o.fusionner_branche(self.depot, {"id": "F001", "description": "x",
+                                                           "sha": self.sha})
+            self.assertIn("D28", raison or "")
+            self.assertEqual(self.origin_main(), self.depart)
+            self.assertEqual(git(self.depot, "rev-parse", "HEAD").strip(), self.depart)
+            ok, raison = self.o.ci_locale(self.depot, self.sha)
+            self.assertFalse(ok)
+            self.assertIn("D28", raison)
+
+    def test_push_refuse_annule_la_fusion_locale(self):
+        """Point 8 : push refusé après la fusion locale = retour à ORIG_HEAD, non fusionnée."""
+        ecrire(os.path.join(self.tmp.name, "origin.git"), "hooks/pre-receive",
+               "#!/bin/sh\nexit 1\n", executable=True)
+        raison = self.o.fusionner_branche(self.depot, {"id": "F001", "description": "x",
+                                                       "sha": self.sha})
+        self.assertIn("push refusé", raison or "")
+        self.assertEqual(git(self.depot, "rev-parse", "HEAD").strip(), self.depart)
+        self.assertEqual(self.origin_main(), self.depart)
+
+    def test_ci_locale_rouge_sans_init_sh(self):
+        """Constat 5 : init.sh absent de la référence = CI locale rouge, pas verte."""
+        git(self.depot, "rm", "-q", "init.sh")
+        git(self.depot, "commit", "-q", "-m", "sans init.sh")
+        git(self.depot, "push", "-q", "origin", "main")
+        self.branche("Ajout de F001")
+        ok, raison = self.o.ci_locale(self.depot, self.sha)
+        self.assertFalse(ok, raison)
+        self.assertIn("init.sh absent", raison)
+
+    def test_ci_locale_rouge_au_delai(self):
+        """Constat 5 : init.sh --ci hors délai = CI locale rouge, pas un arrêt d'orchestre."""
+        ecrire(self.depot, "init.sh", "#!/bin/sh\nexec sleep 30\n", executable=True)
+        git(self.depot, "commit", "-q", "-am", "init.sh lent")
+        git(self.depot, "push", "-q", "origin", "main")
+        self.branche("Ajout de F001")
+        self.o.DELAI_CI = 1
+        ok, raison = self.o.ci_locale(self.depot, self.sha)
+        self.assertFalse(ok, raison)
+        self.assertIn("hors délai", raison)
 
 
 if __name__ == "__main__":

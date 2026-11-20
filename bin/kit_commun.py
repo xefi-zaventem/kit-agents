@@ -40,6 +40,37 @@ def lire_a_la_reference(depot, reference, chemin):
     return git(["show", reference + ":" + chemin], depot)
 
 
+def pilote(depot):
+    """(nom, courriel) du pilote : l'identité git configurée là où orchestre tourne."""
+    ident = git(["var", "GIT_AUTHOR_IDENT"], depot).strip()
+    m = re.fullmatch(r"(.*) <(.*)> \d+ [+-]\d{4}", ident)
+    if not m or not m.group(1) or not m.group(2):
+        raise Erreur("identité git du pilote illisible : " + ident)
+    return m.group(1), m.group(2)
+
+
+def ecarts_d28(depot, plage, nom, courriel):
+    """D28 : chaque commit de <plage> est au seul nom du pilote, sans Co-Authored-By ni
+    anthropic.com. Renvoie la liste des écarts (vide si tout est conforme)."""
+    if not nom or not courriel:
+        return ["pilote non configuré (nom et courriel obligatoires)"]
+    sortie = git(["log", "--format=%H%n%an%n%ae%n%cn%n%ce%n%B%x00", plage, "--"], depot)
+    ecarts = []
+    for bloc in sortie.split("\x00"):
+        lignes = bloc.strip("\n").split("\n")
+        if len(lignes) < 5:
+            continue
+        sha, texte = lignes[0][:12], "\n".join(lignes[1:]).lower()
+        if lignes[1:5] != [nom, courriel, nom, courriel]:
+            ecarts.append(sha + " : auteur ou committer autre que le pilote (%s / %s)"
+                          % (lignes[1] + " <" + lignes[2] + ">", lignes[3] + " <" + lignes[4] + ">"))
+        if "co-authored-by" in texte:
+            ecarts.append(sha + " : Co-Authored-By")
+        if "anthropic.com" in texte:
+            ecarts.append(sha + " : mention anthropic.com")
+    return ecarts
+
+
 def lancer_init(depot, args, delai, reference=REFERENCE):
     """Lance init.sh tel qu'il est à la référence (git show), jamais la copie de travail :
     init.sh appartient à la référence, comme tests/acceptance/. Copié dans un fichier

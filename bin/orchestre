@@ -4,7 +4,7 @@
 Usage :
   orchestre [--depot <dépôt>] [--modele <modèle>] [--ci github|locale]
             [--sans-surveillance <plafond en $ par session>]
-  orchestre fusionner [--depot <dépôt>] [--ci github|locale]
+  orchestre fusionner --recapitulatif <empreinte> [--depot <dépôt>] [--ci github|locale]
 
 orchestre ne fusionne JAMAIS seul dans main (décision D29).
 
@@ -24,7 +24,8 @@ Sans commande, depuis le checkout principal du dépôt, sur main et propre :
    PreToolUse arrête la session) et lit le RÉSULTAT du hook Stop (hook_response).
 4. Classe chaque branche « prête » ou « à relire ». Prête seulement si : session
    sans erreur ; dernier hook Stop terminé en code 0 ; passes est true sur la
-   branche ; aucun ÉCHEC FIN DE SESSION ; diff dans les touches ; taille du diff
+   branche ; aucun signal non vide dans claude-progress.txt (TEST CONTESTÉ,
+   DEMANDE HUMAINE, TROP GROS, ÉCHEC FIN DE SESSION) ; diff dans les touches ; taille du diff
    pas plus du double des autres du jalon ; CI verte (GitHub, ou locale : mêmes
    contrôles que le modèle de CI) ; verdict de /code-review = exactement la
    dernière ligne non vide de la réponse, « (none) » ou « VERDICT : AUCUN
@@ -32,10 +33,14 @@ Sans commande, depuis le checkout principal du dépôt, sur main et propre :
 5. Écrit un récapitulatif (états, signalements, coût et taille du diff, coût total)
    dans .kit/ (Markdown et JSON) et sur la sortie standard.
 
-« orchestre fusionner », lancé par le pilote : reprend le dernier récapitulatif et
-fusionne une par une, dans l'ordre de priorité, les branches « prêtes » ; juste
-avant chaque fusion, il vérifie que la branche n'a pas bougé et revérifie la CI.
-Tests complets après chaque fusion ; conflit ou rouge = pas de fusion.
+« orchestre fusionner », lancé par le pilote : reprend le récapitulatif dont il
+reçoit l'empreinte (sha256, affichée par orchestre ; un fichier déposé dans .kit/
+par du code de l'agent ne compte pas) et fusionne une par une, dans l'ordre de
+priorité, les branches « prêtes » ; juste avant chaque fusion, il vérifie que la
+branche n'a pas bougé et revérifie la CI. Tests complets après chaque fusion ;
+conflit ou rouge = pas de fusion. Avant tout push, chaque commit doit être au seul
+nom du pilote, sans Co-Authored-By ni anthropic.com (D28) ; push refusé = fusion
+locale annulée.
 
 Il ne choisit pas le modèle (--modele est le choix de l'humain), ne réessaie pas,
 ne résout aucun conflit et ne modifie jamais feature_list.json.
@@ -43,6 +48,7 @@ ne résout aucun conflit et ne modifie jamais feature_list.json.
 import argparse
 import contextlib
 import glob
+import hashlib
 import json
 import os
 import re
@@ -70,6 +76,7 @@ CONSIGNE_RELECTURE = (
     "Après la relecture, la dernière ligne de ta réponse est le verdict seul, sans rien "
     "d'autre sur la ligne ni après : « VERDICT : AUCUN BLOQUANT » si rien ne touche le "
     "fonctionnement, la sécurité ou les contrats, sinon « VERDICT : BLOQUANT ». Ignore le style.")
+MARQUE_GARDE = "garde-commandes : autorisé"
 DELAI_CI = 1800
 PRETE, A_RELIRE = "prête", "à relire"
 
@@ -196,11 +203,12 @@ class Session:
                                  % e.get("claude_code_version"))
                 elif os.path.realpath(e.get("cwd", "")) != os.path.realpath(self.worktree):
                     self.arreter("la session ne tourne pas dans son worktree")
-            elif t == "system" and s == "hook_started":
-                if e.get("hook_event") == "PreToolUse":
+            elif t == "system" and s == "hook_started" and e.get("hook_event") == "Stop":
+                self.stop_lances.add(e.get("hook_id"))
+            elif t == "system" and s == "hook_response" and e.get("hook_event") == "PreToolUse":
+                # Preuve que les hooks du kit sont chargés : la marque de garde-commandes.
+                if MARQUE_GARDE in "%s\n%s" % (e.get("output") or "", e.get("stdout") or ""):
                     self.hook_vu = True
-                elif e.get("hook_event") == "Stop":
-                    self.stop_lances.add(e.get("hook_id"))
             elif t == "system" and s == "hook_response" and e.get("hook_event") == "Stop":
                 self.stop_reponses.add(e.get("hook_id"))
                 self.stop_dernier = e
@@ -209,7 +217,8 @@ class Session:
                 for c in contenu if isinstance(contenu, list) else []:
                     if c.get("type") == "tool_result" and not c.get("is_error") \
                             and not self.hook_vu:
-                        self.arreter("un outil a tourné sans hook PreToolUse : hooks non chargés")
+                        self.arreter("un outil a tourné sans le hook PreToolUse garde-commandes : "
+                                     "hooks non chargés")
             elif t == "result":
                 self.resultat = e
         self.proc.wait()
@@ -236,6 +245,15 @@ def evaluer(racine, s):
     """État de la branche après la session : validée ? signalements, taille du diff."""
     info = {"id": s.id, "jalon": s.f["jalon"], "cout": s.cout(), "taille": 0,
             "signaux": [], "raison": None, "branche": "agent/" + s.id, "sha": None}
+    try:
+        return evaluer_branche(racine, s, info)
+    except Exception as e:  # une branche en erreur est « à relire » ; les autres continuent
+        info["raison"] = "erreur à l'évaluation : %s : %s" % (type(e).__name__, e)
+        info["validee"] = False
+        return info
+
+
+def evaluer_branche(racine, s, info):
     if s.arret:
         info["raison"] = "session arrêtée : " + s.arret
         return info
@@ -272,14 +290,19 @@ def evaluer(racine, s):
     info["validee"] = kc.par_id(liste)[s.id]["passes"] is True
     if not info["validee"]:
         info["raison"] = info["raison"] or "non validée (passes reste false)"
-    elif any(x.startswith("ÉCHEC FIN DE SESSION") for x in info["signaux"]):
-        info["raison"] = info["raison"] or "ÉCHEC FIN DE SESSION"
+    signaux = [x for x in info["signaux"] if x.startswith(SIGNAUX)]
+    if signaux:
+        info["raison"] = info["raison"] or "signalement : " + signaux[0]
     return info
 
 
 def ci_locale(racine, sha):
     """Mêmes contrôles que le modèle de CI, dans un checkout propre de <sha>.
-    init.sh est celui de la référence (et doit être identique à la référence)."""
+    init.sh est celui de la référence (et doit être identique à la référence) ; absent
+    ou hors délai = rouge."""
+    ecarts = kc.ecarts_d28(racine, kc.REFERENCE + ".." + sha, *kc.pilote(racine))
+    if ecarts:
+        return False, "CI locale rouge : D28 : " + " ; ".join(ecarts)
     with checkout_propre(racine, sha) as dossier:
         etapes = [["git", "diff", "--exit-code", kc.REFERENCE, "--", "tests/acceptance/",
                    "init.sh"],
@@ -290,8 +313,10 @@ def ci_locale(racine, sha):
             if etape == "init.sh --ci":
                 try:
                     r = kc.lancer_init(dossier, ["--ci"], DELAI_CI)
-                except kc.Erreur:
-                    continue  # pas d'init.sh à la référence : étape sans objet
+                except kc.Erreur as e:
+                    return False, "CI locale rouge : %s" % e
+                except subprocess.TimeoutExpired:
+                    return False, "CI locale rouge : init.sh --ci hors délai (%d s)" % DELAI_CI
                 etape = ["init.sh", "--ci"]
             else:
                 r = subprocess.run(etape, cwd=dossier, capture_output=True, text=True)
@@ -302,6 +327,9 @@ def ci_locale(racine, sha):
 
 
 def ci_github(racine, branche, sha):
+    ecarts = kc.ecarts_d28(racine, kc.REFERENCE + ".." + sha, *kc.pilote(racine))
+    if ecarts:
+        return False, "D28 : pas de push : " + " ; ".join(ecarts)
     git(["push", "origin", "%s:refs/heads/%s" % (sha, branche)], racine)
     fin = time.time() + DELAI_CI
     while time.time() < fin:
@@ -363,7 +391,14 @@ def fusionner_branche(racine, b):
     if t.returncode != 0:
         git(["reset", "--hard", "ORIG_HEAD"], racine)
         return "tests rouges après fusion : fusion annulée\n" + (t.stdout + t.stderr)[-1500:]
-    git(["push", "origin", "HEAD:main"], racine)
+    ecarts = kc.ecarts_d28(racine, kc.REFERENCE + "..HEAD", *kc.pilote(racine))
+    if ecarts:
+        git(["reset", "--hard", "ORIG_HEAD"], racine)
+        return "D28 : fusion annulée, pas de push : " + " ; ".join(ecarts)
+    p = git(["push", "origin", "HEAD:main"], racine, verifier=False)
+    if p.returncode != 0:
+        git(["reset", "--hard", "ORIG_HEAD"], racine)
+        return "push refusé : fusion locale annulée : " + p.stderr.strip()
     worktree = os.path.join(racine, ".claude", "worktrees", b["id"])
     git(["worktree", "unlock", worktree], racine, verifier=False)
     git(["worktree", "remove", "--force", worktree], racine, verifier=False)
@@ -394,12 +429,17 @@ def recapitulatif(racine, infos, cout_relectures, args):
     base = os.path.join(racine, ".kit", "recapitulatif-" + horodatage)
     with open(base + ".md", "w", encoding="utf-8") as f:
         f.write(texte)
-    with open(base + ".json", "w", encoding="utf-8") as f:
-        json.dump({"ci": args.ci, "branches": [
-            {"id": i["id"], "branche": i["branche"], "sha": i["sha"],
-             "description": i["description"], "etat": PRETE if i["prete"] else A_RELIRE,
-             "raison": i["raison"]} for i in infos]}, f, ensure_ascii=False, indent=2)
+    donnees = json.dumps({"ci": args.ci, "branches": [
+        {"id": i["id"], "branche": i["branche"], "sha": i["sha"],
+         "description": i["description"], "etat": PRETE if i["prete"] else A_RELIRE,
+         "raison": i["raison"]} for i in infos]}, ensure_ascii=False, indent=2).encode("utf-8")
+    with open(base + ".json", "wb") as f:
+        f.write(donnees)
     print(texte)
+    # L'empreinte n'existe que sur la sortie d'orchestre, sous les yeux du pilote : un fichier
+    # déposé dans .kit/ par du code de l'agent ne la porte pas (constat 1 de la relecture).
+    print("Pour fusionner : orchestre fusionner --recapitulatif "
+          + hashlib.sha256(donnees).hexdigest())
 
 
 def preparer_main(racine):
@@ -458,13 +498,22 @@ def lancer_lot(racine, args):
 
 
 def fusionner(racine, args):
-    """Fusionne une par une les branches « prêtes » du dernier récapitulatif."""
-    recaps = sorted(glob.glob(os.path.join(racine, ".kit", "recapitulatif-*.json")))
-    if not recaps:
-        raise kc.Erreur("aucun récapitulatif dans .kit/ : lancer orchestre d'abord")
-    with open(recaps[-1], encoding="utf-8") as f:
-        branches = json.load(f)["branches"]
-    print("orchestre fusionner : " + os.path.relpath(recaps[-1], racine))
+    """Fusionne une par une les branches « prêtes » du récapitulatif dont le pilote donne
+    l'empreinte (affichée par orchestre), jamais « le dernier fichier de .kit/ »."""
+    empreinte = (args.recapitulatif or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", empreinte):
+        raise kc.Erreur("--recapitulatif <empreinte> obligatoire (64 caractères hexadécimaux, "
+                        "affichée à la fin d'orchestre)")
+    choisi = None
+    for chemin in glob.glob(os.path.join(racine, ".kit", "recapitulatif-*.json")):
+        with open(chemin, "rb") as f:
+            donnees = f.read()
+        if hashlib.sha256(donnees).hexdigest() == empreinte:
+            choisi = chemin
+            branches = json.loads(donnees.decode("utf-8"))["branches"]
+    if choisi is None:
+        raise kc.Erreur("aucun récapitulatif de .kit/ ne correspond à l'empreinte donnée")
+    print("orchestre fusionner : " + os.path.relpath(choisi, racine))
     for b in branches:
         if b["etat"] != PRETE:
             print("- %s : à relire, non fusionnée" % b["branche"])
@@ -494,6 +543,8 @@ def principal():
     p.add_argument("--modele")
     p.add_argument("--ci", choices=["github", "locale"], default="github")
     p.add_argument("--sans-surveillance", type=float, metavar="PLAFOND_USD")
+    p.add_argument("--recapitulatif", metavar="EMPREINTE",
+                   help="fusionner : empreinte du récapitulatif, affichée par orchestre")
     args = p.parse_args()
 
     racine = kc.racine_depot(args.depot)

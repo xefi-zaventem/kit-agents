@@ -204,9 +204,13 @@ réel (06, §2.12). Pour chaque dépôt déclaré :
    humaines, coût et taille du diff de chaque fonctionnalité (06, §2.12), coût total.
 
 `orchestre` ne fusionne **jamais** seul dans `main` (D29). Le pilote lit le récapitulatif, puis lance
-`orchestre fusionner` : les branches « prêtes » du dernier récapitulatif sont fusionnées une par une,
+`orchestre fusionner --recapitulatif <empreinte>` (empreinte sha256 affichée par `orchestre`, jamais
+« le dernier fichier de `.kit/` », que du code de l'agent pourrait déposer) : les branches « prêtes »
+de ce récapitulatif sont fusionnées une par une,
 dans l'ordre de priorité, si la branche n'a pas bougé depuis et si la CI, revérifiée juste avant, est
-verte ; tests complets après chaque fusion ; conflit ou rouge → pas de fusion, file d'attente.
+verte ; tests complets après chaque fusion ; conflit ou rouge → pas de fusion, file d'attente. Avant
+chaque push, contrôle D28 (auteur et committer = pilote, sans `Co-Authored-By` ni `anthropic.com`) ;
+push refusé → retour à `ORIG_HEAD`, branche non fusionnée.
 
 Ce que `orchestre` ne fait **pas** : choisir le modèle, réessayer en boucle, résoudre un conflit,
 modifier `feature_list.json` autrement que par `marquer-valide`. Sans `orchestre`, la même chose se

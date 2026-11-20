@@ -294,7 +294,14 @@ jobs:
         run: ./init.sh --ci && ./kit/bin/tout-verifier
 ```
 
-`verifier-diff-liste` et `tout-verifier` sont fournis par le kit (phase 0). L'installateur remplace les
+Le modèle livré (`modeles/ci/tests.yml`) ajoute à la première étape le contrôle D28 :
+`kit/bin/verifier-auteurs "$BASE..<tête>" "$KIT_PILOTE_NOM" "$KIT_PILOTE_COURRIEL"` (variables du
+dépôt GitHub `vars.KIT_PILOTE_NOM` et `vars.KIT_PILOTE_COURRIEL`, à poser par le pilote ; absentes =
+rouge). Tout commit dont l'auteur ou le committer n'est pas le pilote, ou qui contient
+`Co-Authored-By` ou `anthropic.com`, rend la CI rouge. `orchestre` fait le même contrôle avant chaque
+push.
+
+`verifier-diff-liste`, `verifier-auteurs` et `tout-verifier` sont fournis par le kit (phase 0). L'installateur remplace les
 deux valeurs entre chevrons. Le dépôt du kit étant public, la CI le lit sans clé. Sur `main` elle-même,
 la première étape compare au commit précédent.
 
