@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""marquer-valide <id> [--reference <ref>] — seul chemin pour passer « passes » à true.
+
+1. Prend feature_list.json et tests/acceptance/ dans la branche de référence,
+   jamais dans la copie de travail. La référence est toujours origin/main (D25) :
+   --reference n'admet qu'un nom qui se résout en refs/remotes/origin/main.
+2. Vérifie que <id> existe et que ses depends_on sont validés à la référence.
+3. Lance le test de <id> dans un conteneur Docker jetable : copie de travail en
+   lecture seule, tests et liste de la référence par-dessus, sans réseau.
+4. Si le test passe : écrit "passes": true pour <id> seulement, dans la copie de
+   travail, et rien d'autre. Sinon : n'écrit rien et renvoie la sortie du test.
+5. Journalise l'appel dans .kit/journal-validations.log (checkout principal).
+
+Il n'exécute jamais lui-même le code de l'agent. Codes : 0 validée, 1 test rouge,
+2 refus ou erreur (échouer fermé : rien n'est écrit).
+"""
+import io
+import json
+import os
+import re
+import sys
+import tarfile
+import tempfile
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import kit_commun as kc  # noqa: E402
+
+REFERENCE_COMPLETE = "refs/remotes/" + kc.REFERENCE
+
+
+def refuser(message):
+    sys.stderr.write("marquer-valide : refusé : " + message + "\n")
+    sys.exit(2)
+
+
+def extraire_tests(depot, reference, destination):
+    archive = kc.git(["archive", "--format=tar", reference, kc.DOSSIER_TESTS], depot,
+                     binaire=True)
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        for membre in tar.getmembers():
+            if not (membre.isfile() or membre.isdir()) or membre.name.startswith("/") \
+                    or ".." in membre.name.split("/"):
+                raise kc.Erreur("archive de tests inattendue : " + membre.name)
+        if hasattr(tarfile, "data_filter"):
+            tar.extractall(destination, filter="data")
+        else:
+            tar.extractall(destination)
+    return os.path.join(destination, kc.DOSSIER_TESTS)
+
+
+def poser_passes(texte, fid):
+    """Remplace « "passes": false » par true dans l'objet de <fid>, sans toucher
+    au reste du fichier (pas de reformatage, donc pas de conflit de fusion)."""
+    piles, objets, dans_chaine, echap = [], [], False, False
+    for i, c in enumerate(texte):
+        if dans_chaine:
+            if echap:
+                echap = False
+            elif c == "\\":
+                echap = True
+            elif c == '"':
+                dans_chaine = False
+        elif c == '"':
+            dans_chaine = True
+        elif c == "{":
+            piles.append(i)
+        elif c == "}":
+            objets.append((piles.pop(), i + 1))
+    for debut, fin in objets:
+        try:
+            obj = json.loads(texte[debut:fin])
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("id") == fid and "steps" in obj:
+            bloc, n = re.subn(r'"passes"(\s*):(\s*)false', r'"passes"\1:\2true',
+                              texte[debut:fin])
+            if n != 1:
+                raise kc.Erreur("champ passes de " + fid + " introuvable ou ambigu")
+            return texte[:debut] + bloc + texte[fin:]
+    raise kc.Erreur(fid + " introuvable dans la copie de travail")
+
+
+def journaliser(depot, fid, resultat, reference):
+    commun = kc.git(["rev-parse", "--path-format=absolute", "--git-common-dir"], depot).strip()
+    dossier = os.path.join(os.path.dirname(commun), ".kit")
+    os.makedirs(dossier, exist_ok=True)
+    tete = kc.git(["rev-parse", "HEAD"], depot).strip()
+    ref = kc.git(["rev-parse", "--verify", "--end-of-options", reference], depot).strip()
+    with open(os.path.join(dossier, "journal-validations.log"), "a", encoding="utf-8") as f:
+        f.write("%s\t%s\t%s\tcommit=%s\treference=%s\n" % (
+            time.strftime("%Y-%m-%dT%H:%M:%S%z"), fid, resultat, tete, ref))
+
+
+def principal(args):
+    reference = REFERENCE_COMPLETE
+    if len(args) == 3 and args[1] == "--reference":
+        try:  # D25 : la référence est toujours origin/main, quel que soit son nom écrit
+            nom = kc.git(["rev-parse", "--symbolic-full-name", "--end-of-options", args[2]],
+                         os.getcwd()).strip()
+        except kc.Erreur:
+            nom = None
+        if args[2].startswith("-") or nom != REFERENCE_COMPLETE:
+            refuser("référence refusée : %r (seule origin/main est admise)" % args[2])
+    elif len(args) != 1:
+        refuser("usage : marquer-valide <id> [--reference <ref>]")
+    fid = args[0]
+    if not re.fullmatch(r"F[0-9]{3}", fid):
+        refuser("id invalide : " + fid)
+    depot = kc.racine_depot(os.getcwd())
+
+    liste_ref_texte = kc.lire_a_la_reference(depot, reference, kc.LISTE)
+    liste_ref = kc.charger_liste(liste_ref_texte)
+    fonctions = kc.par_id(liste_ref)
+    if fid not in fonctions:
+        refuser(fid + " absente de " + kc.LISTE + " à " + reference)
+    f = fonctions[fid]
+    non_valides = [d for d in f["depends_on"] if not fonctions[d]["passes"]]
+    if non_valides:
+        refuser("dépendances non validées à " + reference + " : " + ", ".join(non_valides))
+
+    chemin_liste = os.path.join(depot, kc.LISTE)
+    with open(chemin_liste, encoding="utf-8") as fl:
+        texte_travail = fl.read()
+    travail = json.loads(texte_travail)
+    ecarts = kc.ecarts_hors_passes(liste_ref, travail)
+    if ecarts:
+        refuser(kc.LISTE + " de la copie de travail diffère de la référence : " + "; ".join(ecarts))
+    forces = [x["id"] for x in travail["fonctionnalites"]
+              if x["id"] != fid and x["passes"] is True and not fonctions[x["id"]]["passes"]]
+    if forces:
+        refuser("passes: true sans validation dans la copie de travail : " + ", ".join(forces))
+
+    with tempfile.TemporaryDirectory(prefix="marquer-valide-") as tmp:
+        tests = extraire_tests(depot, reference, tmp)
+        liste_tmp = os.path.join(tmp, kc.LISTE)
+        with open(liste_tmp, "w", encoding="utf-8") as fl:
+            fl.write(liste_ref_texte)
+        chemin_lanceur = os.path.join(tests, "kit.json")
+        with open(chemin_lanceur, encoding="utf-8") as fl:
+            lanceur = kc.charger_lanceur(fl.read())
+        if not os.path.isfile(os.path.join(tmp, f["test"])):
+            refuser("test absent de la référence : " + f["test"])
+        code, sortie = kc.lancer_test(lanceur, f["test"], depot, tests, liste_tmp)
+
+    if code != 0:
+        journaliser(depot, fid, "rouge", reference)
+        sys.stdout.write(sortie)
+        sys.stdout.write("\nmarquer-valide : %s NON validée (test rouge, code %d). "
+                         "Rien n'a été écrit.\n" % (fid, code))
+        return 1
+
+    # Relire juste avant d'écrire : le fichier ne doit pas avoir changé pendant le test.
+    with open(chemin_liste, encoding="utf-8") as fl:
+        if fl.read() != texte_travail:
+            refuser(kc.LISTE + " a changé pendant le test")
+    if kc.par_id(travail)[fid]["passes"] is True:
+        journaliser(depot, fid, "deja-validee", reference)
+        print("marquer-valide : %s était déjà validée." % fid)
+        return 0
+    nouveau = poser_passes(texte_travail, fid)
+    attendu = json.loads(texte_travail)
+    kc.par_id(attendu)[fid]["passes"] = True
+    if json.loads(nouveau) != attendu:
+        refuser("écriture inattendue (contrôle après modification)")
+    tmp_liste = chemin_liste + ".marquer-valide.tmp"
+    with open(tmp_liste, "w", encoding="utf-8") as fl:
+        fl.write(nouveau)
+    os.replace(tmp_liste, chemin_liste)
+    journaliser(depot, fid, "validee", reference)
+    print("marquer-valide : %s validée (passes: true écrit)." % fid)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(principal(sys.argv[1:]))
+    except SystemExit:
+        raise
+    except Exception as e:  # échouer fermé : rien n'a été écrit
+        refuser(type(e).__name__ + " : " + str(e))

@@ -1,14 +1,17 @@
 # kit-agents
 
 Couche **méthode** : un kit générique pour faire construire un logiciel par une équipe d'agents
-Claude Code sans dérive (méthode, modèles, hooks, modèle de CI). Aucun détail de projet ni de machine.
+Claude Code sans dérive (méthode, modèles, hooks, scripts, modèle de CI). Aucun détail de projet ni de machine.
 
-Fichiers qui font foi :
+| Référence dans les textes | Fichier qui fait foi |
+|---|---|
+| `06` | `methode/methode.md` : méthode anti-dérive, proportionnalité, rôles de l'équipe |
+| `07` | `methode/architecture.md` : ce qu'Anthropic publie et les choix du kit (garde-fous, orchestration) |
+| `08` | `methode/modeles.md` : modèles (`feature_list.json`, progression, grille, réglages, CI) |
 
-- `methode/methode.md` : la méthode anti-dérive, la proportionnalité, les rôles de l'équipe ;
-- `methode/architecture.md` : ce qu'Anthropic publie et les choix du kit (garde-fous, orchestration) ;
-- `methode/modeles.md` : les modèles (`feature_list.json`, progression, grille de l'évaluateur, réglages).
+Contenu : `hooks/` (garde-fous Claude Code), `bin/` (`installer`, `marquer-valide`, `orchestre`,
+`verifier-diff-liste`, `tout-verifier`), `modeles/`, `tests/` (`python3 -m unittest discover -s tests`, Docker requis).
+Installation : `bin/installer --depot <dépôt> --regles <règles de la machine> --organisation <org>`.
 
-Version du kit : `VERSION` ; changements : `CHANGELOG.md`. Chaque projet qui utilise le kit note la
-version suivie dans sa `.kit-version`. Le point d'entrée d'un projet est son propre `docs/index.md` :
-c'est lui qu'on joint en tête de chaque session.
+Version : `VERSION` ; changements : `CHANGELOG.md`. Chaque projet note la version suivie dans sa
+`.kit-version`. Le point d'entrée d'un projet est son propre `docs/index.md`.

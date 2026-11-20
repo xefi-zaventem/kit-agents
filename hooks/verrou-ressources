@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""verrou-ressources — hook PreToolUse sur Bash.
+
+Usage (dans les réglages) : /opt/kit/hooks/verrou-ressources <fichier de règles>
+
+Le fichier de règles de la machine (le même que celui de garde-commandes, fourni
+par le dépôt d'infrastructure, section « Ressources partagées » de ENVIRONNEMENT.md)
+déclare :
+    "dossier_verrous": "<dossier hors de portée de l'agent>",
+    "duree_verrou_minutes": 60,
+    "ressources": [ {"nom": "<ressource>", "motif": "<regex sur la commande>"} ]
+
+Une commande qui touche une ressource prend son verrou (ou le prolonge) pour la
+session. Une autre session qui la touche pendant ce temps est refusée (code 2).
+Le verrou expire après la durée déclarée sans usage.
+
+ÉCHOUER FERMÉ : règles ou entrée illisibles, session inconnue, erreur = refus.
+"""
+import json
+import os
+import re
+import sys
+import time
+
+
+def refuser(raison):
+    sys.stderr.write(
+        "Refusé par verrou-ressources : " + raison + "\n"
+        "Une autre session utilise cette ressource. Ne contourne pas le verrou : "
+        "passe à une autre partie du travail, ou note le besoin sous « DEMANDE HUMAINE » "
+        "dans claude-progress.txt.\n")
+    sys.exit(2)
+
+
+def principal():
+    if len(sys.argv) != 2:
+        refuser("usage : verrou-ressources <fichier de règles>")
+    try:
+        with open(sys.argv[1], encoding="utf-8") as f:
+            regles = json.load(f)
+        ressources = [(r["nom"], re.compile(r["motif"])) for r in regles.get("ressources", [])]
+        duree = float(regles.get("duree_verrou_minutes", 60)) * 60
+        dossier = regles["dossier_verrous"] if ressources else None
+    except Exception as e:
+        refuser("règles illisibles (" + type(e).__name__ + ")")
+    try:
+        donnees = json.load(sys.stdin)
+    except Exception:
+        refuser("entrée illisible")
+    if donnees.get("tool_name") != "Bash" or not ressources:
+        sys.exit(0)
+    commande = (donnees.get("tool_input") or {}).get("command", "")
+    if not isinstance(commande, str):
+        refuser("commande illisible")
+    session = donnees.get("session_id")
+    if not session:
+        refuser("session inconnue")
+    touchees = [nom for nom, motif in ressources if motif.search(commande)]
+    if not touchees:
+        sys.exit(0)
+    os.makedirs(dossier, exist_ok=True)
+    maintenant = time.time()
+    for nom in touchees:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", nom):
+            refuser("nom de ressource invalide : " + nom)
+        chemin = os.path.join(dossier, nom + ".verrou")
+        if os.path.exists(chemin):
+            with open(chemin, encoding="utf-8") as f:
+                verrou = json.load(f)
+            if verrou["session"] != session and maintenant - verrou["vu"] < duree:
+                refuser("« %s » est verrouillée par la session %s (dernier usage il y a %d s)"
+                        % (nom, verrou["session"], maintenant - verrou["vu"]))
+    for nom in touchees:
+        chemin = os.path.join(dossier, nom + ".verrou")
+        tmp = "%s.%d.tmp" % (chemin, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"session": session, "vu": maintenant}, f)
+        os.replace(tmp, chemin)
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    try:
+        principal()
+    except SystemExit:
+        raise
+    except Exception as e:
+        refuser("erreur interne du verrou (" + type(e).__name__ + ")")

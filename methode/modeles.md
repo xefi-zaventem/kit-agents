@@ -130,9 +130,8 @@ Un critère sous son seuil = jalon refusé, avec une liste de corrections exploi
   "attribution": { "commit": "", "pr": "", "sessionUrl": false },
   "permissions": {
     "deny": [
-      "Edit(tests/acceptance/**)", "Write(tests/acceptance/**)",
-      "Edit(feature_list.json)",   "Write(feature_list.json)",
-      "Edit(.claude/**)",          "Write(.claude/**)",
+      "Edit(tests/acceptance/**)", "Edit(feature_list.json)", "Edit(init.sh)",
+      "Edit(.claude/**)", "Edit(~/.claude/**)",
       "Read(.env*)", "Read(**/secrets/**)"
     ]
   },
@@ -141,14 +140,14 @@ Un critère sous son seuil = jalon refusé, avec une liste de corrections exploi
     "allowUnsandboxedCommands": false,
     "failIfUnavailable": true,
     "filesystem": {
-      "denyWrite": ["tests/acceptance", "feature_list.json"],
+      "denyWrite": ["tests/acceptance", "feature_list.json", "init.sh", ".claude", "~/.claude"],
       "denyRead": ["**/secrets"]
     },
     "network": {
       "allowedDomains": ["pypi.org", "files.pythonhosted.org", "github.com",
                          "objects.githubusercontent.com", "registry.npmjs.org"]
     },
-    "excludedCommands": ["/opt/kit/bin/marquer-valide"]
+    "excludedCommands": ["/opt/kit/bin/marquer-valide *"]
   },
   "hooks": {
     "PreToolUse": [
@@ -163,13 +162,24 @@ Un critère sous son seuil = jalon refusé, avec une liste de corrections exploi
         "hooks": [ { "type": "command", "command": "/opt/kit/hooks/controles-rapides" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "/opt/kit/hooks/fin-de-session", "onFailure": "block" } ] }
+      { "hooks": [ { "type": "command", "command": "/opt/kit/hooks/fin-de-session" } ] }
     ]
   }
 }
 ```
 
+Le fichier livré est `modeles/settings-produit.json` (l'installateur y met les vrais chemins) ; en
+cas d'écart, c'est lui qui fait foi.
+
 Points d'attention (phase 0) :
+
+- **Pas de règle `Write(...)`** : la doc des permissions précise que les outils de fichiers ne
+  regardent que les règles `Edit(...)` (écriture) et `Read(...)` (lecture) ; une règle `Write(...)`
+  ne s'appliquerait jamais.
+- `init.sh`, `.claude/**` et `~/.claude/**` sont interdits en écriture (règles `Edit` **et**
+  `sandbox.filesystem.denyWrite`) : l'agent ne réécrit ni le script que lancent les hooks, ni les
+  réglages qui chargent ces hooks. Dans le sandbox, `~/` = dossier personnel et un chemin relatif
+  part de la racine du projet ; dans les règles `Edit`, `~/` = dossier personnel aussi.
 
 - `attribution` vide : aucun co-auteur Claude ni lien de session dans les commits et les demandes de
   fusion (D28). Forme objet plutôt que `"attribution": false` : `false` exige Claude Code v2.1.281 ou
@@ -177,7 +187,9 @@ Points d'attention (phase 0) :
 - Hooks et `marquer-valide` vivent dans `/opt/kit/`, **hors du dépôt**, en lecture seule pour
   l'utilisateur qui fait tourner Claude. La doc prévient : exclure du sandbox un script situé dans le
   répertoire de travail permet à l'agent de le réécrire puis de le lancer hors sandbox.
-- `onFailure: "block"` exige une version récente de Claude Code (v2.1.295 ou plus selon la doc).
+- `onFailure: "block"` exige une version récente de Claude Code (v2.1.295 ou plus selon la doc). Il
+  n'est **pas** posé sur `Stop` : la doc précise qu'il n'y a aucun effet (ni sur `SubagentStop`).
+  Le résultat du hook `Stop` est lu par `orchestre` (§5.1 de `07`).
 - Chaque hook est testé volontairement : il doit bloquer ce qu'il doit bloquer, **et** bloquer quand on
   le fait planter exprès.
 
@@ -276,13 +288,36 @@ jobs:
         with: { repository: "<organisation>/kit-agents", ref: "<étiquette de .kit-version>", path: kit }
       - name: Tests d'acceptation et liste inchangés (sauf « passes »)
         run: |
-          git diff --exit-code origin/main -- tests/acceptance/
+          git diff --exit-code origin/main -- tests/acceptance/ init.sh
           python3 kit/bin/verifier-diff-liste origin/main feature_list.json
       - name: Tous les contrôles
         run: ./init.sh --ci && ./kit/bin/tout-verifier
 ```
 
-`verifier-diff-liste` et `tout-verifier` sont fournis par le kit (phase 0). L'installateur remplace les
+Le modèle livré (`modeles/ci/tests.yml`) ajoute à la première étape le contrôle D28 :
+`kit/bin/verifier-auteurs "$BASE..<tête>" "$KIT_PILOTE_NOM" "$KIT_PILOTE_COURRIEL"` (variables du
+dépôt GitHub `vars.KIT_PILOTE_NOM` et `vars.KIT_PILOTE_COURRIEL`, à poser par le pilote ; absentes =
+rouge). Tout commit dont l'auteur ou le committer n'est pas le pilote, ou qui contient
+`Co-Authored-By` ou `anthropic.com`, rend la CI rouge. `orchestre` fait le même contrôle avant chaque
+push.
+
+`verifier-diff-liste`, `verifier-auteurs` et `tout-verifier` sont fournis par le kit (phase 0). L'installateur remplace les
 deux valeurs entre chevrons. Le dépôt du kit étant public, la CI le lit sans clé. Sur `main` elle-même,
 la première étape compare au commit précédent.
 
+
+## 10. Mécanismes gardés : contrat entre le kit et le projet
+
+Ce que le kit attend du dépôt de produit, et comment chaque élément est protégé de l'agent.
+
+| Élément | Rôle | Protection |
+|---|---|---|
+| `init.sh --controles <fichier>` | Lint et format d'un fichier modifié (hook `controles-rapides`) | `init.sh` appartient à la **référence**, comme `tests/acceptance/` : les hooks lancent la version de `origin/main` (`git show`, copiée hors du dépôt, lancée depuis la racine), jamais celle de la copie de travail. Règles `Edit` et `denyWrite` (§4) ; `fin-de-session` refuse un diff sur `init.sh` ; la CI échoue si `init.sh` diffère de `origin/main` (§9) |
+| `init.sh --rapide` | Typage, imports, tests rapides (hook `fin-de-session`) | Idem |
+| `init.sh --ci` | Contrôles complets (CI, et CI locale d'`orchestre`) | Idem ; la CI ne lance `./init.sh` qu'après avoir vérifié qu'il est celui de la référence |
+| `tests/acceptance/kit.json` | `{"image": "...", "commande": [..., "{test}"]}` : comment lancer un test d'acceptation dans le conteneur jetable | Lu **à la référence** par `marquer-valide`, protégé comme les tests (§5) |
+| `claude-progress.txt merge=union` (`.gitattributes`, posé par l'installateur) | Pilote de fusion natif de git : deux branches parallèles ajoutent chacune leur entrée sans conflit | — (fichier d'ajout ; `fin-de-session` exige une entrée par session) |
+
+Conséquence pour `init.sh` : il ne doit pas dépendre de son propre emplacement (`$0`) ; il tourne
+avec la racine du dépôt (ou du worktree) comme dossier courant. Le changer est une décision du
+pilote, sur `main`, comme pour un test d'acceptation.

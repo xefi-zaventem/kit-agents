@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""tout-verifier — contrôle final (CI, et après chaque fusion par orchestre).
+
+1. feature_list.json respecte le schéma du kit.
+2. Le test d'acceptation de chaque fonctionnalité « passes: true » passe encore,
+   lancé dans un conteneur Docker jetable (comme marquer-valide), copie de
+   travail en lecture seule.
+
+Code 0 : tout est vert. Code 1 : au moins un échec. Code 2 : erreur (échouer fermé).
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import kit_commun as kc  # noqa: E402
+
+
+def principal(args):
+    if args:
+        sys.stderr.write("usage : tout-verifier (depuis la racine du dépôt)\n")
+        return 2
+    depot = kc.racine_depot(os.getcwd())
+    with open(os.path.join(depot, kc.LISTE), encoding="utf-8") as f:
+        liste = kc.charger_liste(f.read())
+    validees = [f for f in liste["fonctionnalites"] if f["passes"]]
+    if not validees:
+        print("tout-verifier : schéma conforme ; aucune fonctionnalité validée à relancer.")
+        return 0
+    with open(os.path.join(depot, kc.LANCEUR), encoding="utf-8") as f:
+        lanceur = kc.charger_lanceur(f.read())
+    echecs = []
+    for f in validees:
+        if not os.path.isfile(os.path.join(depot, f["test"])):
+            echecs.append(f["id"] + " : test absent (" + f["test"] + ")")
+            continue
+        code, sortie = kc.lancer_test(lanceur, f["test"], depot)
+        print("%s %s (%s)" % ("OK   " if code == 0 else "ÉCHEC", f["id"], f["test"]))
+        if code != 0:
+            echecs.append(f["id"] + " : code %d\n%s" % (code, sortie[-2000:]))
+    if echecs:
+        print("tout-verifier : %d échec(s) sur %d :\n%s"
+              % (len(echecs), len(validees), "\n".join(echecs)))
+        return 1
+    print("tout-verifier : %d test(s) d'acceptation verts." % len(validees))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(principal(sys.argv[1:]))
+    except Exception as e:
+        sys.stderr.write("tout-verifier : erreur : %s : %s\n" % (type(e).__name__, e))
+        sys.exit(2)

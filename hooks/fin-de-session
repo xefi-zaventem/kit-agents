@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""fin-de-session — hook Stop.
+
+Bloque la fin de la session (code 2, raisons renvoyées à l'agent) si :
+  1. « init.sh --rapide » échoue (typage, imports, tests rapides) ; init.sh est
+     pris à la référence (origin/main, git show), jamais dans la copie de travail ;
+  2. claude-progress.txt n'a pas été mis à jour ;
+  3. tests/acceptance/ ou init.sh a changé (ils appartiennent à la référence) ;
+  4. feature_list.json a changé ailleurs que dans « passes » (verifier-diff-liste) ;
+  5. des fichiers ont changé hors des « touches » de la fonctionnalité.
+Comparaisons faites contre le point de départ de la branche (merge-base avec
+origin/main), modifications non commitées et fichiers nouveaux compris.
+Sans aucun diff (ex. la relecture /code-review, lancée dans un checkout propre de
+la référence), il n'y a rien à contrôler : la fin passe.
+
+La fonctionnalité est lue dans KIT_FONCTIONNALITE (posée par orchestre), sinon
+dans le nom de la branche (ex. agent/F004). Sans fonctionnalité, le contrôle 5
+ne s'applique pas.
+
+AU PLUS 3 BLOCAGES PAR SESSION : ensuite il laisse finir et écrit
+« ÉCHEC FIN DE SESSION » dans claude-progress.txt (contre les boucles).
+Le compteur vit hors du dépôt (KIT_ETAT, sinon ~/.local/state/kit-agents).
+
+Limite documentée : « onFailure » n'a pas d'effet sur Stop. Si ce script ne
+peut pas tourner du tout, la session se termine quand même ; le filet est alors
+la CI et les contrôles d'orchestre avant fusion. Une erreur interne bloque.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin")
+sys.path.insert(0, BIN)
+import kit_commun as kc  # noqa: E402
+
+REFERENCE = kc.REFERENCE
+PROGRESSION = "claude-progress.txt"
+LISTE = "feature_list.json"
+PROTEGES = ["tests/acceptance/", "init.sh"]
+MAX_BLOCAGES = 3
+
+
+def git(args, cwd):
+    r = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("git " + " ".join(args) + " : " + r.stderr.strip())
+    return r.stdout
+
+
+def fichiers_modifies(racine, base, chemins=()):
+    suivis = git(["diff", "--name-only", base, "--"] + list(chemins), racine).split("\n")
+    nouveaux = git(["ls-files", "--others", "--exclude-standard", "--"] + list(chemins),
+                   racine).split("\n")
+    return sorted({f for f in suivis + nouveaux if f})
+
+
+def dans_touches(fichier, touches):
+    for t in touches:
+        t = t[2:] if t.startswith("./") else t
+        if fichier == t.rstrip("/") or fichier.startswith(t.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def fonctionnalite(racine):
+    fid = os.environ.get("KIT_FONCTIONNALITE", "")
+    if not fid:
+        branche = git(["rev-parse", "--abbrev-ref", "HEAD"], racine).strip()
+        m = re.search(r"\bF[0-9]{3}\b", branche.replace("-", " ").replace("/", " "))
+        fid = m.group(0) if m else ""
+    return fid
+
+
+def controles(racine):
+    base = git(["merge-base", REFERENCE, "HEAD"], racine).strip()
+    modifies = fichiers_modifies(racine, base)
+    if not modifies:
+        return []  # aucun diff : rien à contrôler
+    raisons = []
+    try:
+        r = kc.lancer_init(racine, ["--rapide"], 300)
+        if r.returncode != 0:
+            raisons.append("« init.sh --rapide » échoue (code %d) :\n%s"
+                           % (r.returncode, (r.stdout + r.stderr)[-2000:]))
+    except kc.Erreur as e:
+        raisons.append(str(e) + " : contrôles rapides impossibles")
+    except subprocess.TimeoutExpired:
+        raisons.append("« init.sh --rapide » dépasse 300 s")
+
+    if PROGRESSION not in modifies:
+        raisons.append(PROGRESSION + " n'a pas été mis à jour (ajoute l'entrée de la session)")
+    proteges = fichiers_modifies(racine, base, PROTEGES)
+    if proteges:
+        raisons.append("tests/acceptance/ ou init.sh modifié (interdit : ils appartiennent à la "
+                       "référence ; écris TEST CONTESTÉ ou DEMANDE HUMAINE dans "
+                       + PROGRESSION + ") : " + ", ".join(proteges))
+    if os.path.exists(os.path.join(racine, LISTE)):
+        r = subprocess.run([sys.executable, os.path.join(BIN, "verifier-diff-liste"), base, LISTE],
+                           cwd=racine, capture_output=True, text=True)
+        if r.returncode != 0:
+            raisons.append((r.stderr or r.stdout).strip())
+
+    fid = fonctionnalite(racine)
+    if fid:
+        liste = json.loads(git(["show", base + ":" + LISTE], racine))
+        f = {x["id"]: x for x in liste["fonctionnalites"]}.get(fid)
+        if f is None:
+            raisons.append(fid + " absente de " + LISTE)
+        else:
+            hors = [x for x in modifies
+                    if x not in (PROGRESSION, LISTE) and not dans_touches(x, f["touches"])]
+            if hors:
+                raisons.append("fichiers modifiés hors des touches de %s (%s) : %s. "
+                               "Si la fonctionnalité déborde, écris TROP GROS."
+                               % (fid, ", ".join(f["touches"]), ", ".join(hors)))
+    return raisons
+
+
+def principal():
+    try:
+        donnees = json.load(sys.stdin)
+    except Exception:
+        donnees = {}
+    session = re.sub(r"[^A-Za-z0-9_-]", "_", str(donnees.get("session_id") or "inconnue"))
+    racine = git(["rev-parse", "--show-toplevel"], donnees.get("cwd") or os.getcwd()).strip()
+    try:
+        raisons = controles(racine)
+    except Exception as e:  # compte comme un blocage, comme un contrôle rouge
+        raisons = ["erreur interne des contrôles (%s : %s)" % (type(e).__name__, e)]
+
+    etat_dossier = os.environ.get("KIT_ETAT") or os.path.expanduser("~/.local/state/kit-agents")
+    os.makedirs(etat_dossier, exist_ok=True)
+    etat = os.path.join(etat_dossier, "fin-de-session-" + session + ".json")
+    if not raisons:
+        if os.path.exists(etat):
+            os.remove(etat)
+        sys.exit(0)
+    blocages = 0
+    if os.path.exists(etat):
+        with open(etat, encoding="utf-8") as f:
+            blocages = json.load(f)["blocages"]
+    if blocages >= MAX_BLOCAGES:
+        with open(os.path.join(racine, PROGRESSION), "a", encoding="utf-8") as f:
+            f.write("ÉCHEC FIN DE SESSION : %s | session %s | %s\n" % (
+                time.strftime("%Y-%m-%d %H:%M"), session, " ; ".join(
+                    r.split("\n")[0] for r in raisons)))
+        os.remove(etat)
+        sys.stderr.write("fin-de-session : %d blocages atteints, fin laissée ; "
+                         "ÉCHEC FIN DE SESSION écrit dans %s.\n" % (MAX_BLOCAGES, PROGRESSION))
+        sys.exit(0)
+    with open(etat, "w", encoding="utf-8") as f:
+        json.dump({"blocages": blocages + 1}, f)
+    sys.stderr.write("fin-de-session : la session ne peut pas finir (blocage %d sur %d) :\n- %s\n"
+                     % (blocages + 1, MAX_BLOCAGES, "\n- ".join(raisons)))
+    sys.exit(2)
+
+
+if __name__ == "__main__":
+    try:
+        principal()
+    except SystemExit:
+        raise
+    except Exception as e:
+        sys.stderr.write("fin-de-session : erreur interne (%s : %s) ; fin bloquée.\n"
+                         % (type(e).__name__, e))
+        sys.exit(2)
