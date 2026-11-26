@@ -131,8 +131,9 @@ Un critère sous son seuil = jalon refusé, avec une liste de corrections exploi
   "permissions": {
     "deny": [
       "Edit(tests/acceptance/**)", "Edit(feature_list.json)", "Edit(init.sh)", "Edit(.github/**)",
-      "Edit(**/conftest.py)", "Edit(pytest.ini)", "Edit(tox.ini)", "Edit(setup.cfg)",
-      "Edit(pyproject.toml)", "Edit(**/sitecustomize.py)", "Edit(**/usercustomize.py)",
+      "Edit(**/conftest.py)", "Edit(**/pytest.ini)", "Edit(**/.pytest.ini)", "Edit(**/pytest.toml)",
+      "Edit(**/tox.ini)", "Edit(**/setup.cfg)", "Edit(**/pyproject.toml)",
+      "Edit(**/sitecustomize.py)", "Edit(**/usercustomize.py)",
       "Edit(.claude/**)", "Edit(~/.claude/**)",
       "Read(.env*)", "Read(**/secrets/**)"
     ]
@@ -142,8 +143,8 @@ Un critère sous son seuil = jalon refusé, avec une liste de corrections exploi
     "allowUnsandboxedCommands": false,
     "failIfUnavailable": true,
     "filesystem": {
-      "denyWrite": ["tests/acceptance", "feature_list.json", "init.sh", ".github", "conftest.py",
-                    "tests/conftest.py", "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml",
+      "denyWrite": ["tests/acceptance", "feature_list.json", "init.sh", ".github",
+                    "<chaque fichier de configuration des tests, à la racine et dans tests/>",
                     ".claude", "~/.claude"],
       "denyRead": ["**/secrets"]
     },
@@ -300,9 +301,14 @@ jobs:
 
 La référence s'écrit en nom complet (`refs/remotes/origin/main`) : une étiquette ou une branche
 nommée `origin/main` par l'agent ne la remplace pas. Sur une branche, le modèle livré vérifie aussi
-que `.github/` et la configuration du lanceur de tests (`conftest.py` à tout niveau, `pytest.ini`,
-`tox.ini`, `setup.cfg`, `pyproject.toml`, `sitecustomize.py`, `usercustomize.py`) n'ont pas changé :
-seul le pilote les change, sur `main`.
+que la branche n'a pas changé, depuis son point de départ, la configuration du lanceur de tests
+(`conftest.py`, `pytest.ini`, `.pytest.ini`, `pytest.toml`, `tox.ini`, `setup.cfg`,
+`pyproject.toml`, `sitecustomize.py`, `usercustomize.py`, à tout niveau) : seul le pilote la change,
+sur `main`. **`.github/` n'est pas protégé par la CI** : GitHub lance le workflow présent dans la
+branche elle-même, qu'une branche peut donc vider. Il est protégé sur la machine de l'agent
+(`Edit`, `denyWrite`, `fin-de-session`) et par la relecture neuve (D27), qui lit tout le diff. Le
+protéger aussi côté GitHub demande un réglage du dépôt (par exemple CODEOWNERS sur `.github/` avec
+revue obligatoire) : décision du pilote.
 
 Le modèle livré (`modeles/ci/tests.yml`) ajoute à la première étape le contrôle D28 :
 `kit/bin/verifier-auteurs "$BASE..<tête>" "$KIT_PILOTE_NOM" "$KIT_PILOTE_COURRIEL"` (variables du

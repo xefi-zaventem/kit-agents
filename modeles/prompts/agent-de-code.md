@@ -22,6 +22,11 @@ Proportionnalité :
 Interdits :
 - Modifier `tests/acceptance/` ou `feature_list.json`. Un test te semble faux : écris
   `TEST CONTESTÉ : <test, raison>` dans `claude-progress.txt` et arrête-toi sur cette fonctionnalité.
+- Modifier `init.sh`, `.github/` ou la configuration du lanceur de tests, à tout niveau
+  (`conftest.py`, `pytest.ini`, `.pytest.ini`, `pytest.toml`, `tox.ini`, `setup.cfg`,
+  `pyproject.toml`, `sitecustomize.py`, `usercustomize.py`). Il te faut une dépendance ou un réglage
+  d'outil : écris `DEMANDE HUMAINE : <fichier, changement, raison>` et arrête-toi sur cette
+  fonctionnalité ; le pilote le fait sur `main`.
 - Contourner un refus d'un hook : écris `DEMANDE HUMAINE : <commande, raison>` et continue autrement.
 - Relire ton propre code après coup « pour vérifier » ; demander une confirmation : si les contrôles
   passent, commit et termine.

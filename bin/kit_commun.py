@@ -24,11 +24,17 @@ COMMITTER_GITHUB = ("GitHub", "noreply@github.com")
 # Fichiers qui appartiennent à la référence : une branche d'agent ne les change pas
 # (fin-de-session, CI du modèle). .github/ : sinon la branche peut vider sa propre CI.
 PROTEGES = ("tests/acceptance/", "init.sh", ".github/")
-# Configuration du lanceur de tests lue dans la copie de travail (conftest.py, options de
-# pytest, sitecustomize) : changée par l'agent, elle peut rendre un test vert sans ses
+# Configuration du lanceur de tests lue dans la copie de travail (conftest.py, fichiers de
+# réglages de pytest, sitecustomize), à tout niveau : pytest cherche ses réglages dans chaque
+# dossier parent du test. Changée par l'agent, elle peut rendre un test vert sans ses
 # assertions. Seul le pilote la change sur main ; marquer-valide refuse sinon.
-CONFIG_TESTS = (":(glob)**/conftest.py", "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml",
-                ":(glob)**/sitecustomize.py", ":(glob)**/usercustomize.py")
+NOMS_CONFIG_TESTS = ("conftest.py", "pytest.ini", ".pytest.ini", "pytest.toml", "tox.ini",
+                     "setup.cfg", "pyproject.toml", "sitecustomize.py", "usercustomize.py")
+CONFIG_TESTS = tuple(":(glob)**/" + n for n in NOMS_CONFIG_TESTS)
+# Dossiers que pytest lit pour un test de tests/acceptance/ (racine, tests/ ; tests/acceptance/
+# vient de la référence) : là, même un fichier ignoré par git compte. Pas plus loin, pour ne pas
+# parcourir .venv/ ou node_modules/ (des paquets livrent leur propre conftest.py).
+CONFIG_TESTS_ANCETRES = NOMS_CONFIG_TESTS + tuple("tests/" + n for n in NOMS_CONFIG_TESTS)
 LISTE = "feature_list.json"
 DOSSIER_TESTS = "tests/acceptance"
 LANCEUR = DOSSIER_TESTS + "/kit.json"
@@ -68,11 +74,13 @@ def pilote(depot):
     return m.group(1), m.group(2)
 
 
-def fichiers_modifies(depot, base, chemins=()):
-    """Fichiers suivis qui diffèrent de <base> et fichiers nouveaux non ignorés, limités aux
-    chemins (pathspecs git) donnés."""
+def fichiers_modifies(depot, base, chemins=(), ignores=False):
+    """Fichiers suivis qui diffèrent de <base> et fichiers nouveaux, limités aux chemins
+    (pathspecs git) donnés. Sans <ignores>, les fichiers ignorés par git sont laissés de côté ;
+    avec, ils comptent aussi (le conteneur de test reçoit toute la copie de travail)."""
     suivis = git(["diff", "--name-only", base, "--"] + list(chemins), depot).split("\n")
-    nouveaux = git(["ls-files", "--others", "--exclude-standard", "--"] + list(chemins),
+    nouveaux = git(["ls-files", "--others"] + ([] if ignores else ["--exclude-standard"])
+                   + ["--"] + list(chemins),
                    depot).split("\n")
     return sorted({f for f in suivis + nouveaux if f})
 

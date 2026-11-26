@@ -133,7 +133,9 @@ def principal(args):
     # La configuration du lanceur de tests est lue dans la copie de travail : changée, elle
     # peut rendre le test vert sans ses assertions (conftest.py, options de pytest).
     base = kc.git(["merge-base", reference, "HEAD"], depot).strip()
-    config = kc.fichiers_modifies(depot, base, kc.CONFIG_TESTS)
+    config = sorted(set(kc.fichiers_modifies(depot, base, kc.CONFIG_TESTS))
+                    | set(kc.fichiers_modifies(depot, base, kc.CONFIG_TESTS_ANCETRES,
+                                               ignores=True)))
     if config:
         refuser("configuration des tests modifiée par rapport à origin/main (seul le pilote la "
                 "change, sur main ; écris DEMANDE HUMAINE) : " + ", ".join(config))

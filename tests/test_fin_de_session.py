@@ -61,7 +61,8 @@ class TestFinDeSession(unittest.TestCase):
         """Relecture du 26/11 (constats 2 et 3) : .github/ et la configuration du lanceur de
         tests appartiennent à la référence, comme tests/acceptance/."""
         for i, relatif in enumerate((".github/workflows/tests.yml", "conftest.py",
-                                     "app/conftest.py", "pyproject.toml")):
+                                     "app/conftest.py", "pyproject.toml", "tests/pytest.ini",
+                                     ".pytest.ini")):
             self.travail_correct()
             ecrire(self.depot, relatif, "# agent\n")
             r = self.stop(session="p%d" % i)

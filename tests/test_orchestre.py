@@ -404,10 +404,11 @@ class TestSansDocker(unittest.TestCase):
         """Relecture du 26/11 : sans --essai-du-kit, ni le lot ni « fusionner » ne tournent
         (D31), même avec un récapitulatif valide."""
         empreinte = self.recap("recapitulatif-20261126-120000.json")
-        for args in (["fusionner", "--recapitulatif", empreinte], []):
+        for args in (["fusionner", "--recapitulatif", empreinte], [], ["--essai"], ["--e"]):
             r = lancer(["bin/orchestre"] + args + ["--depot", self.depot, "--ci", "locale"])
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-            self.assertIn("D31", r.stderr)
+            self.assertIn("D31" if "--e" not in args and "--essai" not in args
+                          else "unrecognized arguments", r.stderr)
             self.assertNotIn("fusionnée", r.stdout)
             self.assertEqual(self.origin_main(), self.depart)
 

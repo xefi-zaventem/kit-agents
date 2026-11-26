@@ -99,10 +99,13 @@ class TestInstaller(unittest.TestCase):
     def test_init_sh_et_reglages_proteges(self):
         reglages = json.loads(lire(chemin("modeles"), "settings-produit.json"))
         deny = reglages["permissions"]["deny"]
-        for regle in ("Edit(init.sh)", "Edit(.claude/**)", "Edit(~/.claude/**)"):
+        for regle in ("Edit(init.sh)", "Edit(.claude/**)", "Edit(~/.claude/**)",
+                      "Edit(.github/**)", "Edit(**/conftest.py)", "Edit(**/pytest.ini)",
+                      "Edit(**/pyproject.toml)", "Edit(**/sitecustomize.py)"):
             self.assertIn(regle, deny)
         self.assertFalse([r for r in deny if r.startswith("Write(")])  # sans effet (doc)
-        for chemin_protege in ("init.sh", ".claude", "~/.claude"):
+        for chemin_protege in ("init.sh", ".claude", "~/.claude", ".github", "conftest.py",
+                               "tests/conftest.py", "pyproject.toml", "sitecustomize.py"):
             self.assertIn(chemin_protege, reglages["sandbox"]["filesystem"]["denyWrite"])
 
     def etape_ci(self, ci, nom):
@@ -160,13 +163,15 @@ class TestInstaller(unittest.TestCase):
         r = ci()
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_ci_rouge_si_github_ou_configuration_des_tests_changent(self):
-        """Relecture du 26/11 (constats 2 et 3) : sur une branche, .github/ et la configuration
-        du lanceur de tests ne changent pas, commités ou non."""
+    def test_ci_rouge_si_la_configuration_des_tests_change(self):
+        """Relecture du 26/11 (constat 3) : sur une branche, la configuration du lanceur de
+        tests ne change pas, à tout niveau, commitée ou non. (.github/ n'est pas contrôlé par la
+        CI : GitHub lance le workflow de la branche elle-même.)"""
         depot, ci, _ = self.projet_ci()
         self.assertEqual(ci().returncode, 0, ci().stdout + ci().stderr)
-        for relatif, commit in ((".github/workflows/tests.yml", True), ("conftest.py", False),
-                                ("app/conftest.py", True), ("pyproject.toml", True)):
+        for relatif, commit in (("conftest.py", False), ("app/conftest.py", True),
+                                ("pyproject.toml", True), ("tests/pytest.ini", True),
+                                ("app/.pytest.ini", True), ("pytest.toml", False)):
             ecrire(depot, relatif, "# agent\n")
             if commit:
                 git(depot, "add", relatif)
@@ -174,6 +179,24 @@ class TestInstaller(unittest.TestCase):
             self.assertNotEqual(ci().returncode, 0, relatif)
             git(depot, "reset", "-q", "--hard", "refs/remotes/origin/main")
             git(depot, "clean", "-q", "-fd", "-e", "kit")
+
+    def test_ci_de_branche_ignore_les_changements_de_main(self):
+        """Relecture du 26/11 (régression 1) : le pilote change pyproject.toml sur main après le
+        départ de la branche ; la branche, qui n'y touche pas, reste verte."""
+        depot, ci, _ = self.projet_ci()
+        git(depot, "switch", "-q", "-c", "agent/F001")
+        ecrire(depot, "app/a.py", "a = 1" + chr(10))
+        git(depot, "add", "app")
+        git(depot, "commit", "-q", "-m", "F001")
+        git(depot, "switch", "-q", "main")
+        ecrire(depot, "pyproject.toml", "[project]" + chr(10) + "name = 'essai'" + chr(10))
+        git(depot, "add", "pyproject.toml")
+        git(depot, "commit", "-q", "-m", "dépendance (pilote)")
+        git(depot, "push", "-q", "origin", "main")
+        git(depot, "switch", "-q", "agent/F001")
+        git(depot, "merge", "-q", "--no-edit", "main")  # comme le commit de fusion d'une PR
+        r = ci()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_ci_de_main_admet_la_fusion_faite_sur_github(self):
         """Relecture du 26/11 (constat 6) : sur main, le commit de fusion de GitHub (auteur =

@@ -123,8 +123,16 @@ class TestMarquerValide(unittest.TestCase):
     def test_configuration_des_tests_modifiee_refusee(self):
         """Relecture du 26/11 (constat 3) : un conftest.py ou une option de pytest ajoutés par
         l'agent pourraient rendre le test vert sans ses assertions : refus avant le test."""
+        exclure = os.path.join(self.depot, ".git", "info", "exclude")
         for relatif, commit in (("conftest.py", False), ("app/conftest.py", False),
-                                ("pyproject.toml", True), ("pytest.ini", False)):
+                                ("pyproject.toml", True), ("pytest.ini", False),
+                                ("tests/pytest.ini", False), (".pytest.ini", False),
+                                ("tests/pyproject.toml", True), ("tests/conftest.py", "ignoré"),
+                                ("pytest.ini", "ignoré")):
+            if commit == "ignoré":  # ignoré par git, mais vu par le conteneur de test
+                with open(exclure, "a", encoding="utf-8") as f:
+                    f.write(relatif + chr(10))
+                commit = False
             ecrire(self.depot, relatif, "# agent\n")
             if commit:
                 git(self.depot, "add", relatif)
@@ -135,7 +143,16 @@ class TestMarquerValide(unittest.TestCase):
             self.assertIn(relatif, r.stderr)
             self.assertFalse(self.passes()["F001"])
             git(self.depot, "reset", "-q", "--hard", "main")
-            git(self.depot, "clean", "-q", "-fd")
+            git(self.depot, "clean", "-q", "-fdx")
+
+    def test_configuration_ignoree_hors_des_dossiers_du_test_admise(self):
+        """Non-régression : un conftest.py livré par un paquet dans un dossier ignoré (.venv/)
+        n'est pas lu pour tests/acceptance/ et ne fait pas refuser marquer-valide."""
+        ecrire(self.depot, ".git/info/exclude", ".venv/" + chr(10))
+        ecrire(self.depot, ".venv/lib/paquet/conftest.py", "# paquet\n")
+        ecrire(self.depot, ".venv/lib/paquet/pyproject.toml", "# paquet\n")
+        r = self.marquer("F001")
+        self.assertNotIn("configuration des tests", r.stderr)
 
     def test_reference_autre_que_origin_main_refusee(self):
         """Constat 2 : la référence reste origin/main (D25) ; une valeur en « - » n'est

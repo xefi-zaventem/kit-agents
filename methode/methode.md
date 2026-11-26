@@ -56,6 +56,10 @@ Une conversation **produit** ces fichiers. Elle n'est jamais la source de vérit
   Anthropic a constaté que les tests unitaires et `curl` seuls laissent passer les échecs de bout en bout.
 - L'agent de code ne peut ni écrire dans `tests/acceptance/`, ni modifier `feature_list.json`
   directement : c'est imposé par le sandbox et les permissions, pas seulement par un hook (`07`, §4.3).
+- `init.sh`, `.github/` et la configuration du lanceur de tests (`conftest.py`, réglages de pytest,
+  `pyproject.toml`, `setup.cfg`, `sitecustomize.py`…, à tout niveau) appartiennent aussi à la
+  référence : une dépendance ou un réglage d'outil passe par une `DEMANDE HUMAINE`, et le pilote le
+  change sur `main`.
 - `passes` ne passe à `true` que par `marquer-valide <id>`, qui lance le test de la fonctionnalité et
   n'écrit que si le test passe. L'agent ne peut pas « réussir » en changeant la règle.
 - `marquer-valide` prend le test et `feature_list.json` **dans la branche de référence** (pas dans
