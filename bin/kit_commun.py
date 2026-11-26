@@ -9,7 +9,16 @@ import re
 import subprocess
 import tempfile
 
-REFERENCE = "origin/main"
+# Nom complet : une branche locale nommée « origin/main » (refs/heads/origin/main) passerait
+# avant refs/remotes/origin/main avec le nom court.
+REFERENCE = "refs/remotes/origin/main"
+# D28 : motifs refusés dans le message de chaque commit (comparés en minuscules).
+MOTIFS_D28 = (("co-authored-by", "Co-Authored-By"),
+              ("anthropic.com", "mention anthropic.com"),
+              ("generated with claude code", "mention « Generated with Claude Code »"),
+              ("generated with [claude code]", "mention « Generated with Claude Code »"),
+              ("claude.com/claude-code", "lien claude.com/claude-code"),
+              ("claude.ai/code", "lien de session claude.ai/code"))
 LISTE = "feature_list.json"
 DOSSIER_TESTS = "tests/acceptance"
 LANCEUR = DOSSIER_TESTS + "/kit.json"
@@ -50,8 +59,9 @@ def pilote(depot):
 
 
 def ecarts_d28(depot, plage, nom, courriel):
-    """D28 : chaque commit de <plage> est au seul nom du pilote, sans Co-Authored-By ni
-    anthropic.com. Renvoie la liste des écarts (vide si tout est conforme)."""
+    """D28 : chaque commit de <plage> est au seul nom du pilote, sans Co-Authored-By,
+    anthropic.com, « Generated with Claude Code » ni lien de session (MOTIFS_D28).
+    Renvoie la liste des écarts (vide si tout est conforme)."""
     if not nom or not courriel:
         return ["pilote non configuré (nom et courriel obligatoires)"]
     sortie = git(["log", "--format=%H%n%an%n%ae%n%cn%n%ce%n%B%x00", plage, "--"], depot)
@@ -64,11 +74,17 @@ def ecarts_d28(depot, plage, nom, courriel):
         if lignes[1:5] != [nom, courriel, nom, courriel]:
             ecarts.append(sha + " : auteur ou committer autre que le pilote (%s / %s)"
                           % (lignes[1] + " <" + lignes[2] + ">", lignes[3] + " <" + lignes[4] + ">"))
-        if "co-authored-by" in texte:
-            ecarts.append(sha + " : Co-Authored-By")
-        if "anthropic.com" in texte:
-            ecarts.append(sha + " : mention anthropic.com")
+        vus = []
+        for motif, libelle in MOTIFS_D28:
+            if motif in texte and libelle not in vus:
+                vus.append(libelle)
+                ecarts.append(sha + " : " + libelle)
     return ecarts
+
+
+def nom_court(reference):
+    """Nom lisible d'une référence dans les messages (refs/remotes/origin/main → origin/main)."""
+    return reference[len("refs/remotes/"):] if reference.startswith("refs/remotes/") else reference
 
 
 def lancer_init(depot, args, delai, reference=REFERENCE):
@@ -79,7 +95,7 @@ def lancer_init(depot, args, delai, reference=REFERENCE):
     try:
         contenu = git(["show", reference + ":init.sh"], depot, binaire=True)
     except Erreur:
-        raise Erreur("init.sh absent de " + reference)
+        raise Erreur("init.sh absent de " + nom_court(reference))
     with tempfile.TemporaryDirectory(prefix="kit-init-") as tmp:
         script = os.path.join(tmp, "init.sh")
         with open(script, "wb") as f:

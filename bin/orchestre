@@ -8,6 +8,13 @@ Usage :
 
 orchestre ne fusionne JAMAIS seul dans main (décision D29).
 
+BLOQUÉ AVANT LE POINT DE CONTRÔLE (D31) : sans --essai-du-kit, le lot comme
+« fusionner » refusent de tourner (code 2). La relecture de la PR #1 (26/11/2026)
+a laissé des constats ouverts sur orchestre (signaux de claude-progress.txt,
+verdict « (none) », tests et CI après fusion, erreur qui arrête le lot) : ils sont
+dans CHANGELOG.md (« Limites connues ») et seront corrigés avant tout usage réel.
+--essai-du-kit est réservé aux tests du kit et à tests/essai-bout-en-bout.
+
 Sans commande, depuis le checkout principal du dépôt, sur main et propre :
 1. Lit feature_list.json à origin/main et choisit les fonctionnalités prêtes
    (non validées, dépendances validées).
@@ -39,7 +46,8 @@ par du code de l'agent ne compte pas) et fusionne une par une, dans l'ordre de
 priorité, les branches « prêtes » ; juste avant chaque fusion, il vérifie que la
 branche n'a pas bougé et revérifie la CI. Tests complets après chaque fusion ;
 conflit ou rouge = pas de fusion. Avant tout push, chaque commit doit être au seul
-nom du pilote, sans Co-Authored-By ni anthropic.com (D28) ; push refusé = fusion
+nom du pilote, sans Co-Authored-By, anthropic.com ni mention de Claude Code
+(D28, kit_commun.MOTIFS_D28) ; push refusé = fusion
 locale annulée.
 
 Il ne choisit pas le modèle (--modele est le choix de l'humain), ne réessaie pas,
@@ -545,7 +553,15 @@ def principal():
     p.add_argument("--sans-surveillance", type=float, metavar="PLAFOND_USD")
     p.add_argument("--recapitulatif", metavar="EMPREINTE",
                    help="fusionner : empreinte du récapitulatif, affichée par orchestre")
+    p.add_argument("--essai-du-kit", action="store_true",
+                   help="réservé aux tests du kit et à tests/essai-bout-en-bout (D31)")
     args = p.parse_args()
+    if not args.essai_du_kit:
+        sys.stderr.write(
+            "orchestre : refusé : bloqué avant le point de contrôle (D31) ; constats ouverts "
+            "dans CHANGELOG.md (« Limites connues »). Une fonctionnalité = une session, en "
+            "série. --essai-du-kit est réservé aux tests du kit.\n")
+        return 2
 
     racine = kc.racine_depot(args.depot)
     preparer_main(racine)

@@ -157,7 +157,8 @@ class TestOrchestre(unittest.TestCase):
                          "FAUX_APPELS": self.appels, "FAUX_TRAVAIL": json.dumps(self.travail),
                          "FAUX_MARQUER": chemin("bin", "marquer-valide")}
         environnement.update(env or {})
-        r = lancer(["bin/orchestre"] + list(args) + ["--depot", self.depot, "--ci", "locale"],
+        r = lancer(["bin/orchestre"] + list(args) + ["--depot", self.depot, "--ci", "locale",
+                                                      "--essai-du-kit"],
                    env=environnement)
         if "--recapitulatif " in r.stdout:
             self.empreinte = r.stdout.split("--recapitulatif ")[-1].split()[0]
@@ -295,7 +296,7 @@ class TestOrchestre(unittest.TestCase):
         self.assertEqual(self.passes_sur_origin()["F001"], False)
 
     def test_version_trop_ancienne(self):
-        r = lancer(["bin/orchestre", "--depot", self.depot, "--ci", "locale"],
+        r = lancer(["bin/orchestre", "--depot", self.depot, "--ci", "locale", "--essai-du-kit"],
                    env={"PATH": self.faux + os.pathsep + os.environ["PATH"],
                         "FAUX_APPELS": self.appels, "FAUX_TRAVAIL": json.dumps(self.travail),
                         "FAUX_MARQUER": chemin("bin", "marquer-valide"), "FAUX_VERSION": "2.1.200"})
@@ -377,7 +378,8 @@ class TestSansDocker(unittest.TestCase):
         return hashlib.sha256(donnees).hexdigest()
 
     def fusionner(self, *args):
-        return lancer(["bin/orchestre", "fusionner", "--depot", self.depot, "--ci", "locale"]
+        return lancer(["bin/orchestre", "fusionner", "--depot", self.depot, "--ci", "locale",
+                       "--essai-du-kit"]
                       + list(args))
 
     def test_faux_recapitulatif_depose_par_l_agent_non_fusionne(self):
@@ -398,12 +400,36 @@ class TestSansDocker(unittest.TestCase):
         self.assertIn("- agent/F001 : fusionnée", r.stdout, r.stderr)
         self.assertNotEqual(self.origin_main(), self.depart)
 
+    def test_bloque_avant_le_point_de_controle(self):
+        """Relecture du 26/11 : sans --essai-du-kit, ni le lot ni « fusionner » ne tournent
+        (D31), même avec un récapitulatif valide."""
+        empreinte = self.recap("recapitulatif-20261126-120000.json")
+        for args in (["fusionner", "--recapitulatif", empreinte], []):
+            r = lancer(["bin/orchestre"] + args + ["--depot", self.depot, "--ci", "locale"])
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("D31", r.stderr)
+            self.assertNotIn("fusionnée", r.stdout)
+            self.assertEqual(self.origin_main(), self.depart)
+
+    def test_reference_en_nom_complet(self):
+        """Mineur 10 : une branche locale nommée « origin/main » ne remplace pas la référence
+        (init.sh, liste et plages sont lus à refs/remotes/origin/main)."""
+        kc = self.o.kc
+        self.assertEqual(kc.REFERENCE, "refs/remotes/origin/main")
+        git(self.depot, "branch", "origin/main", self.sha)  # refs/heads/origin/main
+        self.assertEqual(git(self.depot, "rev-parse", kc.REFERENCE).strip(), self.depart)
+        self.assertEqual(kc.lire_a_la_reference(self.depot, kc.REFERENCE, "init.sh"),
+                         git(self.depot, "show", self.depart + ":init.sh"))
+
     def test_d28_refuse_le_push_d_un_commit_co_signe(self):
         """Constat 3 : avant tout push (ci_github, fusionner_branche), chaque commit doit être
         au seul nom du pilote, sans Co-Authored-By ni anthropic.com."""
         for message, extra in (
                 ("F001\n\nCo-Authored-By: Claude <noreply@anthropic.com>", ()),
                 ("F001 (aide de anthropic.com)", ()),
+                ("F001\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)", ()),
+                ("F001\n\nGenerated with Claude Code", ()),
+                ("F001\n\nhttps://claude.ai/code/session_0123", ()),
                 ("F001", ("--author", "Autre <autre@exemple.invalid>"))):
             self.branche(message, *extra)
             ok, raison = self.o.ci_github(self.depot, "agent/F001", self.sha)

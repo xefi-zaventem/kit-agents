@@ -2,7 +2,8 @@
 """verifier-auteurs <plage> <nom du pilote> <courriel du pilote> — contrôle D28 (CI).
 
 Chaque commit de <plage> (ex. origin/main..<sha>) doit avoir le pilote pour auteur et
-pour committer, sans Co-Authored-By ni mention anthropic.com.
+pour committer, sans Co-Authored-By, anthropic.com, « Generated with Claude Code » ni lien
+de session (kit_commun.MOTIFS_D28).
 Code 0 : conforme. Code 1 : au moins un écart. Code 2 : erreur (échouer fermé).
 """
 import os

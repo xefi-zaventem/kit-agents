@@ -26,7 +26,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import kit_commun as kc  # noqa: E402
 
-REFERENCE_COMPLETE = "refs/remotes/" + kc.REFERENCE
+REFERENCE_COMPLETE = kc.REFERENCE  # refs/remotes/origin/main
 
 
 def refuser(message):

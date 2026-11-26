@@ -153,6 +153,41 @@ le poste et sudo est exclu pendant cette phase. Permissions et hooks restaient a
 - Tests qui demandent Docker : sautés (`skipUnless`) là où Docker manque ; la CI du kit les lance.
 - `tests/essai-bout-en-bout` passe l'empreinte affichée par `orchestre` à `orchestre fusionner`.
 
+### Corrigé après la 3e relecture neuve de la PR #1 (26/11/2026, verdict BLOQUANT)
+
+Périmètre choisi par le pilote : corriger ce qui sert avant le point de contrôle ; bloquer
+`orchestre`, qui ne sert pas avant (D31) ; ses constats ouverts sont listés plus bas.
+
+- **D28** : `kit_commun.ecarts_d28` refuse aussi « Generated with Claude Code » et les liens
+  `claude.com/claude-code` et `claude.ai/code` (liens de session), en plus de `Co-Authored-By` et
+  `anthropic.com` (`MOTIFS_D28`). Même contrôle pour `orchestre`, `bin/verifier-auteurs` et le modèle
+  de CI. Tests : `test_d28_refuse_le_push_d_un_commit_co_signe`, `test_ci_rouge_si_commit_hors_d28`.
+- **Référence en nom complet** : `REFERENCE = "refs/remotes/origin/main"` partout (`orchestre`,
+  `fin-de-session`, `controles-rapides`, `lancer_init`, `marquer-valide`). Une branche locale nommée
+  `origin/main` ne la remplace plus. Test : `test_reference_en_nom_complet`.
+- **`orchestre` bloqué avant le point de contrôle (D31)** : sans `--essai-du-kit`, le lot comme
+  `orchestre fusionner` refusent (code 2). L'option est réservée aux tests du kit et à
+  `tests/essai-bout-en-bout`. Test : `test_bloque_avant_le_point_de_controle`.
+
+### Limites connues : constats ouverts sur `orchestre` (à corriger avant le point de contrôle)
+
+Relevés par la relecture du 26/11/2026 ; `orchestre` reste bloqué tant qu'ils sont ouverts.
+
+1. Signal de `claude-progress.txt` ignoré quand sa valeur commence par « aucun », « aucune » ou
+   « non » (seul le premier mot est lu, `bin/orchestre`, signaux).
+2. Signal invisible si l'en-tête n'est pas écrit exactement (espaces, puce, gras, minuscules, accent
+   absent ou décomposé).
+3. Après chaque fusion, seuls les tests d'acceptation (`tout-verifier`) repassent : ni
+   `init.sh --ci` ni les contrôles de la CI sur le résultat fusionné.
+4. Avec `--ci github`, la CI « revérifiée » avant fusion est l'ancien run du même sha, calculé contre
+   l'ancien `main`.
+5. Une erreur dans la CI ou la relecture d'une branche arrête encore tout le lot (et, dans
+   `fusionner`, saute les branches suivantes).
+6. « (none) » en dernière ligne suffit, même quand la relecture liste des constats plus haut. La
+   lecture du verdict a déjà eu deux corrections : à reprendre avec le pilote.
+7. (mineur) Modèle de CI : sur `main`, `BASE=HEAD~1` au lieu de `github.event.before`.
+8. (mineur) `fusionner` prend `--ci` de la ligne de commande au lieu du récapitulatif.
+
 ## 0.0.0-pre
 
 - Mise en place du dépôt : méthode, modèles et hook `garde-commandes` (dossier v4).

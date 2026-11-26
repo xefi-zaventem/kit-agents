@@ -151,6 +151,8 @@ class TestInstaller(unittest.TestCase):
         self.assertEqual(ci().returncode, 0, ci().stdout + ci().stderr)
         for message, auteur in (("b\n\nCo-Authored-By: Claude <noreply@anthropic.com>", None),
                                 ("c (voir anthropic.com)", None),
+                                ("e\n\nGenerated with Claude Code", None),
+                                ("f\n\nhttps://claude.ai/code/session_0123", None),
                                 ("d", "Autre <autre@exemple.invalid>")):
             git(depot, "reset", "-q", "--hard", "origin/main")
             ecrire(depot, "app/b.py", "b = 1\n")

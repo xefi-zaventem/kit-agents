@@ -175,6 +175,9 @@ découverte dans un projet devient une modification de `kit-agents`, une nouvell
 
 ### 5.1 Le script `orchestre` (version réduite, v1.0)
 
+> **Bloqué avant le point de contrôle (D31)** : sans `--essai-du-kit` (réservé aux tests du kit),
+> `orchestre` refuse de tourner. Constats ouverts : `CHANGELOG.md`, « Limites connues ».
+
 Livré par le kit, lancé par l'humain. Il ne fait que ce qui suit ; tout ajout passe par un incident
 réel (06, §2.12). Pour chaque dépôt déclaré :
 
@@ -209,7 +212,8 @@ réel (06, §2.12). Pour chaque dépôt déclaré :
 de ce récapitulatif sont fusionnées une par une,
 dans l'ordre de priorité, si la branche n'a pas bougé depuis et si la CI, revérifiée juste avant, est
 verte ; tests complets après chaque fusion ; conflit ou rouge → pas de fusion, file d'attente. Avant
-chaque push, contrôle D28 (auteur et committer = pilote, sans `Co-Authored-By` ni `anthropic.com`) ;
+chaque push, contrôle D28 (auteur et committer = pilote, sans `Co-Authored-By`, `anthropic.com`,
+« Generated with Claude Code » ni lien de session) ;
 push refusé → retour à `ORIG_HEAD`, branche non fusionnée.
 
 Ce que `orchestre` ne fait **pas** : choisir le modèle, réessayer en boucle, résoudre un conflit,
