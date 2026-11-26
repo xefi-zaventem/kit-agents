@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Essai de bout en bout du kit, en local, avec le vrai Claude Code (coûte un peu).
+
+Usage : tests/essai-bout-en-bout <dossier vide> [--modele haiku] [--sans-sandbox]
+
+Crée dans <dossier> un dépôt nu (origin) et un dépôt de travail, installe le kit
+avec --destination, puis lance orchestre (--ci locale : tout-verifier remplace la
+CI), qui ne fusionne rien (D29), puis « orchestre fusionner » comme le pilote.
+Trois fonctionnalités indépendantes de quelques lignes : F001 et F002 doivent être
+validées ; sont fusionnées exactement celles que le récapitulatif classe « prêtes »
+(une relecture qui ajoute du texte après « (none) » laisse la branche à relire) ;
+F003 a un test volontairement rouge et ne doit jamais passer à « passes: true ».
+
+--sans-sandbox : seulement sur un poste où le sandbox ne peut pas démarrer (par
+exemple socat absent) ; les autres garde-fous restent actifs. À noter dans le
+compte rendu de l'essai.
+Ce fichier n'est pas lancé par la suite de tests (pas de préfixe test_).
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from outils import IMAGE, chemin, creer_depot, ecrire, fonctionnalite, git, lire  # noqa: E402
+
+INIT = """#!/bin/sh
+# init.sh de l'essai : Python seul, sans dépendance.
+case "$1" in
+  --controles) case "$2" in *.py) python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$2" ;; esac ;;
+  --rapide) for f in $(git ls-files -co --exclude-standard 'app/*.py'); do python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$f" || exit 1; done ;;
+  --ci) exit 0 ;;
+  *) python3 -c "import app; print('application prête')" ;;
+esac
+"""
+
+TEST_F001 = """import sys
+sys.path.insert(0, ".")
+from app.salut import salut
+assert salut("Ana") == "Bonjour, Ana !", salut("Ana")
+print("ok")
+"""
+TEST_F002 = """import sys
+sys.path.insert(0, ".")
+from app.somme import somme
+assert somme(2, 3) == 5 and somme(-1, 1) == 0
+print("ok")
+"""
+TEST_F003 = """import sys
+sys.path.insert(0, ".")
+from app.trois import trois
+assert trois() == 3
+raise AssertionError("test volontairement rouge : l'essai vérifie qu'il ne passe jamais")
+"""
+
+
+def principal():
+    p = argparse.ArgumentParser()
+    p.add_argument("dossier")
+    p.add_argument("--modele", default="haiku")
+    p.add_argument("--sans-sandbox", action="store_true")
+    a = p.parse_args()
+    tmp = os.path.realpath(a.dossier)
+    os.makedirs(tmp, exist_ok=True)
+    if os.listdir(tmp):
+        sys.exit("le dossier doit être vide")
+
+    def f(fid, touches, description, steps, prio):
+        x = fonctionnalite(fid, touches, priorite=prio)
+        x.update(description=description, steps=steps)
+        return x
+    base = f("F000", ["app/__init__.py"], "Squelette : le paquet app s'importe",
+             ["python3 -c 'import app' réussit"], 1)
+    base["passes"] = True
+    fonctions = [
+        base,
+        f("F001", ["app/salut.py"], "salut(nom) renvoie « Bonjour, <nom> ! »",
+          ["Appeler salut('Ana')", "Le résultat est 'Bonjour, Ana !'"], 1),
+        f("F002", ["app/somme.py"], "somme(a, b) renvoie la somme de deux entiers",
+          ["Appeler somme(2, 3)", "Le résultat est 5"], 2),
+        f("F003", ["app/trois.py"], "trois() renvoie 3",
+          ["Appeler trois()", "Le résultat est 3"], 3),
+    ]
+    depot = creer_depot(tmp, fonctions, tests={
+        "tests/acceptance/test_f000.py": "import sys\nsys.path.insert(0, '.')\nimport app\n",
+        "tests/acceptance/test_f001.py": TEST_F001,
+        "tests/acceptance/test_f002.py": TEST_F002,
+        "tests/acceptance/test_f003.py": TEST_F003,
+    }, fichiers={"app/__init__.py": "", "CLAUDE.md": "# Projet d'essai du kit\n\n"
+                 "Python 3 sans dépendance. Une fonction par fichier dans app/.\n"})
+    ecrire(depot, "init.sh", INIT, executable=True)
+    regles = os.path.join(tmp, "regles.json")
+    dest = os.path.join(tmp, "kit")
+    with open(regles, "w", encoding="utf-8") as fl:
+        json.dump({"chemins_proteges": [dest.replace(".", "\\.") + "(/|\\b)"],
+                   "lecture_seule": ["cat", "ls", "head", "grep", "marquer-valide"], "commandes": [],
+                   "motifs_texte": []}, fl)
+    r = subprocess.run([sys.executable, chemin("bin", "installer"), "--depot", depot,
+                        "--regles", regles, "--organisation", "exemple",
+                        "--destination", dest], capture_output=True, text=True)
+    print(r.stdout + r.stderr)
+    if r.returncode:
+        return 1
+    reglages = json.loads(lire(depot, ".claude/settings.json"))
+    reglages["permissions"]["allow"] = ["Bash(python3 *)"]  # règle propre au projet d'essai
+    if a.sans_sandbox:
+        reglages["sandbox"]["enabled"] = False
+    ecrire(depot, ".claude/settings.json", json.dumps(reglages, indent=2) + "\n")
+    git(depot, "add", "-A")
+    git(depot, "commit", "-q", "-m", "Installation du kit")
+    git(depot, "push", "-q", "origin", "main")
+
+    r = subprocess.run([os.path.join(dest, "bin", "orchestre"), "--depot", depot,
+                        "--ci", "locale", "--modele", a.modele, "--essai-du-kit"],
+                       capture_output=True, text=True)
+    print(r.stdout + r.stderr)
+    empreinte = (r.stdout.split("--recapitulatif ")[-1].split() or [""])[0]
+    git(depot, "fetch", "-q", "origin")
+    seul = json.loads(git(depot, "show", "origin/main:feature_list.json"))["fonctionnalites"]
+    rien_fusionne = [x["id"] for x in seul if x["passes"]] == ["F000"]
+    print("orchestre seul n'a rien fusionné :", rien_fusionne)
+    m = subprocess.run([os.path.join(dest, "bin", "orchestre"), "fusionner", "--depot", depot,
+                        "--ci", "locale", "--recapitulatif", empreinte, "--essai-du-kit"])
+    git(depot, "fetch", "-q", "origin")
+    passes = {x["id"]: x["passes"] for x in json.loads(
+        git(depot, "show", "origin/main:feature_list.json"))["fonctionnalites"]}
+    print("passes sur origin/main :", passes)
+    v = subprocess.run([os.path.join(dest, "bin", "tout-verifier")], cwd=depot,
+                       capture_output=True, text=True)
+    print(v.stdout + v.stderr)
+    recaps = sorted(f for f in os.listdir(os.path.join(depot, ".kit"))
+                    if f.startswith("recapitulatif-") and f.endswith(".json"))
+    with open(os.path.join(depot, ".kit", recaps[-1]), encoding="utf-8") as fl:
+        pretes = {b["id"] for b in json.load(fl)["branches"] if b["etat"] == "prête"}
+    print("prêtes :", sorted(pretes))
+    attendu = {"F000": True, "F001": "F001" in pretes, "F002": "F002" in pretes, "F003": False}
+    ok = (r.returncode == 0 and m.returncode == 0 and rien_fusionne and passes == attendu
+          and pretes and "F003" not in pretes and v.returncode == 0)
+    print("ESSAI DE BOUT EN BOUT :", "RÉUSSI" if ok else "ÉCHEC")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(principal())

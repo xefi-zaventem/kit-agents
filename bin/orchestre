@@ -1,0 +1,578 @@
+#!/usr/bin/env python3
+"""orchestre — version réduite (methode/architecture.md §5.1), lancée par l'humain.
+
+Usage :
+  orchestre [--depot <dépôt>] [--modele <modèle>] [--ci github|locale]
+            [--sans-surveillance <plafond en $ par session>]
+  orchestre fusionner --recapitulatif <empreinte> [--depot <dépôt>] [--ci github|locale]
+
+orchestre ne fusionne JAMAIS seul dans main (décision D29).
+
+BLOQUÉ AVANT LE POINT DE CONTRÔLE (D31) : sans --essai-du-kit, le lot comme
+« fusionner » refusent de tourner (code 2). La relecture de la PR #1 (26/11/2026)
+a laissé des constats ouverts sur orchestre (signaux de claude-progress.txt,
+verdict « (none) », tests et CI après fusion, erreur qui arrête le lot) : ils sont
+dans CHANGELOG.md (« Limites connues ») et seront corrigés avant tout usage réel.
+--essai-du-kit est réservé aux tests du kit et à tests/essai-bout-en-bout.
+
+Sans commande, depuis le checkout principal du dépôt, sur main et propre :
+1. Lit feature_list.json à origin/main et choisit les fonctionnalités prêtes
+   (non validées, dépendances validées).
+2. Forme un lot parallèle selon methode/methode.md §2.10 : au plus 3 ; touches
+   disjointes ; aucune dépendance entre elles ; une fonctionnalité qui touche un
+   fichier partagé (contrats, migrations, réglages, CLAUDE.md) part seule ; tant
+   qu'aucune fonctionnalité n'est validée (tranche exemplaire), une seule.
+3. Pour chacune : « claude -p --worktree <id> » (worktree natif de Claude Code),
+   sans --bare, avec --settings du dépôt, acceptEdits et --allowedTools explicite,
+   et un environnement sans aucune variable KIT_* sauf KIT_FONCTIONNALITE.
+   --max-budget-usd seulement avec --sans-surveillance. Vérifie dans system/init la
+   version (onFailure exige 2.1.295) et le worktree ; system/init ne liste pas les
+   hooks : il les suit par --include-hook-events (un outil qui tourne sans hook
+   PreToolUse arrête la session) et lit le RÉSULTAT du hook Stop (hook_response).
+4. Classe chaque branche « prête » ou « à relire ». Prête seulement si : session
+   sans erreur ; dernier hook Stop terminé en code 0 ; passes est true sur la
+   branche ; aucun signal non vide dans claude-progress.txt (TEST CONTESTÉ,
+   DEMANDE HUMAINE, TROP GROS, ÉCHEC FIN DE SESSION) ; diff dans les touches ; taille du diff
+   pas plus du double des autres du jalon ; CI verte (GitHub, ou locale : mêmes
+   contrôles que le modèle de CI) ; verdict de /code-review = exactement la
+   dernière ligne non vide de la réponse, « (none) » ou « VERDICT : AUCUN
+   BLOQUANT ». La relecture tourne dans un checkout propre de origin/main.
+5. Écrit un récapitulatif (états, signalements, coût et taille du diff, coût total)
+   dans .kit/ (Markdown et JSON) et sur la sortie standard.
+
+« orchestre fusionner », lancé par le pilote : reprend le récapitulatif dont il
+reçoit l'empreinte (sha256, affichée par orchestre ; un fichier déposé dans .kit/
+par du code de l'agent ne compte pas) et fusionne une par une, dans l'ordre de
+priorité, les branches « prêtes » ; juste avant chaque fusion, il vérifie que la
+branche n'a pas bougé et revérifie la CI. Tests complets après chaque fusion ;
+conflit ou rouge = pas de fusion. Avant tout push, chaque commit doit être au seul
+nom du pilote, sans Co-Authored-By, anthropic.com ni mention de Claude Code
+(D28, kit_commun.MOTIFS_D28) ; push refusé = fusion
+locale annulée.
+
+Il ne choisit pas le modèle (--modele est le choix de l'humain), ne réessaie pas,
+ne résout aucun conflit et ne modifie jamais feature_list.json.
+"""
+import argparse
+import contextlib
+import glob
+import hashlib
+import json
+import os
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+BIN = os.path.dirname(os.path.realpath(__file__))
+KIT = os.path.dirname(BIN)
+sys.path.insert(0, BIN)
+import kit_commun as kc  # noqa: E402
+
+MAX_AGENTS = 3
+VERSION_MIN = (2, 1, 295)
+PARTAGES = ("contrats/", "docs/contrats/", "migrations/", ".claude/", "CLAUDE.md")
+SIGNAUX = ("TEST CONTESTÉ", "DEMANDE HUMAINE", "TROP GROS", "ÉCHEC FIN DE SESSION")
+VIDES = ("aucun", "aucune", "non", "")
+HORS_TOUCHES = ("claude-progress.txt", kc.LISTE)
+VERDICTS_OK = ("(none)", "VERDICT : AUCUN BLOQUANT")
+CONSIGNE_RELECTURE = (
+    "Après la relecture, la dernière ligne de ta réponse est le verdict seul, sans rien "
+    "d'autre sur la ligne ni après : « VERDICT : AUCUN BLOQUANT » si rien ne touche le "
+    "fonctionnement, la sécurité ou les contrats, sinon « VERDICT : BLOQUANT ». Ignore le style.")
+MARQUE_GARDE = "garde-commandes : autorisé"
+DELAI_CI = 1800
+PRETE, A_RELIRE = "prête", "à relire"
+
+
+def git(args, cwd, verifier=True):
+    r = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+    if verifier and r.returncode != 0:
+        raise kc.Erreur("git " + " ".join(args) + " : " + r.stderr.strip())
+    return r
+
+
+def environnement(**poses):
+    """Environnement d'une session : celui de l'hôte sans aucune variable KIT_*,
+    plus celles qu'orchestre pose lui-même."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("KIT_")}
+    env.update(poses)
+    return env
+
+
+@contextlib.contextmanager
+def checkout_propre(racine, ref):
+    """Worktree détaché et neuf de <ref>, hors du dépôt, retiré à la fin."""
+    tmp = tempfile.mkdtemp(prefix="kit-checkout-")
+    dossier = os.path.join(tmp, "depot")
+    git(["worktree", "add", "-q", "--detach", dossier, ref], racine)
+    try:
+        yield dossier
+    finally:
+        git(["worktree", "remove", "--force", dossier], racine, verifier=False)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def normaliser(chemin):
+    return (chemin[2:] if chemin.startswith("./") else chemin).rstrip("/")
+
+
+def chevauche(a, b):
+    a, b = normaliser(a), normaliser(b)
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/") or not a or not b
+
+
+def dans_touches(fichier, touches):
+    return any(fichier == normaliser(t) or fichier.startswith(normaliser(t) + "/")
+               for t in touches if normaliser(t))
+
+
+def en_conflit(f, g):
+    return (f["id"] in g["depends_on"] or g["id"] in f["depends_on"]
+            or any(chevauche(a, b) for a in f["touches"] for b in g["touches"]))
+
+
+def former_lot(liste, maximum=MAX_AGENTS):
+    fonctions = kc.par_id(liste)
+    pretes = sorted((f for f in liste["fonctionnalites"]
+                     if not f["passes"] and all(fonctions[d]["passes"] for d in f["depends_on"])),
+                    key=lambda f: (f["priorite"], f["id"]))
+    if not any(f["passes"] for f in liste["fonctionnalites"]):
+        return pretes[:1]  # tranche exemplaire : seule
+    lot = []
+    for f in pretes:
+        partage = not f["touches"] or any(chevauche(t, p) for t in f["touches"] for p in PARTAGES)
+        if partage:
+            if not lot:
+                return [f]
+            continue
+        if not any(en_conflit(f, g) for g in lot):
+            lot.append(f)
+        if len(lot) == maximum:
+            break
+    return lot
+
+
+def version(texte):
+    return tuple(int(x) for x in re.findall(r"\d+", texte or "")[:3])
+
+
+class Session:
+    """Une session « claude -p » d'agent de code, surveillée par ses événements."""
+
+    def __init__(self, racine, f, args):
+        self.f, self.id = f, f["id"]
+        self.worktree = os.path.join(racine, ".claude", "worktrees", self.id)
+        self.arret, self.resultat, self.hook_vu = None, None, False
+        self.stop_lances, self.stop_reponses, self.stop_dernier = set(), set(), None
+        marquer = os.path.join(BIN, "marquer-valide")
+        with open(os.path.join(KIT, "modeles", "prompts", "agent-de-code.md"), encoding="utf-8") as p:
+            prompt = p.read().replace("{id}", self.id).replace("{marquer_valide}", marquer)
+        outils = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(git status *)",
+                  "Bash(git diff *)", "Bash(git log *)", "Bash(git add *)",
+                  "Bash(git commit *)", "Bash(./init.sh *)", "Bash(%s *)" % marquer]
+        cmd = ["claude", "-p", prompt, "--worktree", self.id,
+               "--output-format", "stream-json", "--verbose", "--include-hook-events",
+               "--settings", os.path.join(racine, ".claude", "settings.json"),
+               "--permission-mode", "acceptEdits", "--allowedTools", ",".join(outils)]
+        if args.modele:
+            cmd += ["--model", args.modele]
+        if args.sans_surveillance is not None:
+            cmd += ["--max-budget-usd", str(args.sans_surveillance)]
+        os.makedirs(os.path.join(racine, ".kit", "sessions"), exist_ok=True)
+        self.journal = open(os.path.join(racine, ".kit", "sessions", self.id + ".jsonl"), "w",
+                            encoding="utf-8")
+        self.proc = subprocess.Popen(cmd, cwd=racine, env=environnement(KIT_FONCTIONNALITE=self.id),
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=self.journal, text=True)
+        self.fil = threading.Thread(target=self.lire)
+        self.fil.start()
+
+    def arreter(self, raison):
+        if not self.arret:
+            self.arret = raison
+            self.proc.kill()
+
+    def lire(self):
+        for ligne in self.proc.stdout:
+            self.journal.write(ligne)
+            try:
+                e = json.loads(ligne)
+            except ValueError:
+                continue
+            t, s = e.get("type"), e.get("subtype")
+            if t == "system" and s == "init":
+                if version(e.get("claude_code_version")) < VERSION_MIN:
+                    self.arreter("Claude Code %s < 2.1.295 (onFailure inconnu)"
+                                 % e.get("claude_code_version"))
+                elif os.path.realpath(e.get("cwd", "")) != os.path.realpath(self.worktree):
+                    self.arreter("la session ne tourne pas dans son worktree")
+            elif t == "system" and s == "hook_started" and e.get("hook_event") == "Stop":
+                self.stop_lances.add(e.get("hook_id"))
+            elif t == "system" and s == "hook_response" and e.get("hook_event") == "PreToolUse":
+                # Preuve que les hooks du kit sont chargés : la marque de garde-commandes.
+                if MARQUE_GARDE in "%s\n%s" % (e.get("output") or "", e.get("stdout") or ""):
+                    self.hook_vu = True
+            elif t == "system" and s == "hook_response" and e.get("hook_event") == "Stop":
+                self.stop_reponses.add(e.get("hook_id"))
+                self.stop_dernier = e
+            elif t == "user":
+                contenu = (e.get("message") or {}).get("content") or []
+                for c in contenu if isinstance(contenu, list) else []:
+                    if c.get("type") == "tool_result" and not c.get("is_error") \
+                            and not self.hook_vu:
+                        self.arreter("un outil a tourné sans le hook PreToolUse garde-commandes : "
+                                     "hooks non chargés")
+            elif t == "result":
+                self.resultat = e
+        self.proc.wait()
+        self.journal.close()
+
+    def probleme_stop(self):
+        """None si le hook Stop a tourné et que son dernier résultat est un succès."""
+        if not self.stop_lances:
+            return "hook fin-de-session non vu"
+        if self.stop_lances - self.stop_reponses:
+            return "hook fin-de-session sans résultat (sauté ou interrompu)"
+        d = self.stop_dernier
+        if d.get("exit_code") != 0 or d.get("outcome") != "success":
+            return "hook fin-de-session en échec (code %s, %s) : %s" % (
+                d.get("exit_code"), d.get("outcome"),
+                (str(d.get("output") or "").strip().split("\n") or [""])[0])
+        return None
+
+    def cout(self):
+        return float((self.resultat or {}).get("total_cost_usd") or 0)
+
+
+def evaluer(racine, s):
+    """État de la branche après la session : validée ? signalements, taille du diff."""
+    info = {"id": s.id, "jalon": s.f["jalon"], "cout": s.cout(), "taille": 0,
+            "signaux": [], "raison": None, "branche": "agent/" + s.id, "sha": None}
+    try:
+        return evaluer_branche(racine, s, info)
+    except Exception as e:  # une branche en erreur est « à relire » ; les autres continuent
+        info["raison"] = "erreur à l'évaluation : %s : %s" % (type(e).__name__, e)
+        info["validee"] = False
+        return info
+
+
+def evaluer_branche(racine, s, info):
+    if s.arret:
+        info["raison"] = "session arrêtée : " + s.arret
+        return info
+    if not os.path.isdir(s.worktree):
+        info["raison"] = "worktree absent (session en échec)"
+        return info
+    if not s.resultat or s.resultat.get("is_error"):
+        info["raison"] = "session en erreur : " + str((s.resultat or {}).get("subtype"))
+    info["raison"] = info["raison"] or s.probleme_stop()
+    branche = git(["rev-parse", "--abbrev-ref", "HEAD"], s.worktree).stdout.strip()
+    if branche != info["branche"]:
+        git(["branch", "-m", info["branche"]], s.worktree)
+    info["sha"] = git(["rev-parse", info["branche"]], racine).stdout.strip()
+    if git(["status", "--porcelain"], s.worktree).stdout.strip():
+        info["signaux"].append("modifications non commitées dans le worktree")
+        info["raison"] = info["raison"] or "modifications non commitées"
+    plage = kc.REFERENCE + "..." + info["branche"]
+    for ligne in git(["diff", plage, "--", "claude-progress.txt"], racine).stdout.splitlines():
+        if ligne.startswith("+") and not ligne.startswith("+++"):
+            for signal in SIGNAUX:
+                if ligne[1:].startswith(signal):
+                    valeur = ligne[1:].split(":", 1)[-1].strip()
+                    if valeur.split(" ")[0].lower().strip("()") not in VIDES:
+                        info["signaux"].append(ligne[1:].strip())
+    for ligne in git(["diff", "--numstat", plage, "--", ".", ":(exclude)claude-progress.txt"],
+                     racine).stdout.splitlines():
+        champs = ligne.split("\t")
+        info["taille"] += sum(int(x) for x in champs[:2] if x.isdigit())
+    hors = [x for x in git(["diff", "--name-only", plage], racine).stdout.splitlines()
+            if x and x not in HORS_TOUCHES and not dans_touches(x, s.f["touches"])]
+    if hors:
+        info["raison"] = info["raison"] or "diff hors des touches : " + ", ".join(hors)
+    liste = json.loads(git(["show", info["branche"] + ":" + kc.LISTE], racine).stdout)
+    info["validee"] = kc.par_id(liste)[s.id]["passes"] is True
+    if not info["validee"]:
+        info["raison"] = info["raison"] or "non validée (passes reste false)"
+    signaux = [x for x in info["signaux"] if x.startswith(SIGNAUX)]
+    if signaux:
+        info["raison"] = info["raison"] or "signalement : " + signaux[0]
+    return info
+
+
+def ci_locale(racine, sha):
+    """Mêmes contrôles que le modèle de CI, dans un checkout propre de <sha>.
+    init.sh est celui de la référence (et doit être identique à la référence) ; absent
+    ou hors délai = rouge."""
+    ecarts = kc.ecarts_d28(racine, kc.REFERENCE + ".." + sha, *kc.pilote(racine))
+    if ecarts:
+        return False, "CI locale rouge : D28 : " + " ; ".join(ecarts)
+    with checkout_propre(racine, sha) as dossier:
+        etapes = [["git", "diff", "--exit-code", kc.REFERENCE, "--", "tests/acceptance/",
+                   "init.sh"],
+                  [sys.executable, os.path.join(BIN, "verifier-diff-liste"), kc.REFERENCE, kc.LISTE],
+                  "init.sh --ci",
+                  [sys.executable, os.path.join(BIN, "tout-verifier")]]
+        for etape in etapes:
+            if etape == "init.sh --ci":
+                try:
+                    r = kc.lancer_init(dossier, ["--ci"], DELAI_CI)
+                except kc.Erreur as e:
+                    return False, "CI locale rouge : %s" % e
+                except subprocess.TimeoutExpired:
+                    return False, "CI locale rouge : init.sh --ci hors délai (%d s)" % DELAI_CI
+                etape = ["init.sh", "--ci"]
+            else:
+                r = subprocess.run(etape, cwd=dossier, capture_output=True, text=True)
+            if r.returncode != 0:
+                return False, "CI locale rouge : %s\n%s" % (" ".join(etape[-2:]),
+                                                         (r.stdout + r.stderr)[-1500:])
+    return True, "CI locale verte"
+
+
+def ci_github(racine, branche, sha):
+    ecarts = kc.ecarts_d28(racine, kc.REFERENCE + ".." + sha, *kc.pilote(racine))
+    if ecarts:
+        return False, "D28 : pas de push : " + " ; ".join(ecarts)
+    git(["push", "origin", "%s:refs/heads/%s" % (sha, branche)], racine)
+    fin = time.time() + DELAI_CI
+    while time.time() < fin:
+        r = subprocess.run(["gh", "run", "list", "--branch", branche, "--limit", "20",
+                            "--json", "headSha,status,conclusion"],
+                           cwd=racine, capture_output=True, text=True)
+        if r.returncode != 0:
+            return False, "gh run list : " + r.stderr.strip()
+        runs = [x for x in json.loads(r.stdout or "[]") if x.get("headSha") == sha]
+        if runs and all(x.get("status") == "completed" for x in runs):
+            if all(x.get("conclusion") == "success" for x in runs):
+                return True, "CI GitHub verte"
+            return False, "CI GitHub rouge"
+        time.sleep(20)
+    return False, "CI GitHub sans résultat après %d min" % (DELAI_CI // 60)
+
+
+def verifier_ci(racine, args, branche, sha):
+    return ci_locale(racine, sha) if args.ci == "locale" else ci_github(racine, branche, sha)
+
+
+def verdict(texte):
+    """Seule la dernière ligne non vide compte : « (none) » ou « VERDICT : AUCUN BLOQUANT »
+    exactement. Un verdict cité plus haut (ex. recopié d'un commentaire du diff) ne compte pas."""
+    lignes = [l.strip() for l in texte.splitlines() if l.strip()]
+    return bool(lignes) and lignes[-1] in VERDICTS_OK
+
+
+def relire(racine, branche, args):
+    """/code-review (fonction native) en mode -p sur la branche, dans un checkout propre
+    de la référence : sans diff, le hook fin-de-session n'a rien à contrôler.
+    Renvoie (accepté ?, coût, texte)."""
+    cmd = ["claude", "-p", "/code-review low %s...%s" % (kc.REFERENCE, branche),
+           "--output-format", "json", "--append-system-prompt", CONSIGNE_RELECTURE,
+           "--allowedTools", ",".join(["Read", "Glob", "Grep"] + ["Bash(git %s *)" % c for c in (
+               "diff", "log", "show", "status", "rev-parse", "merge-base", "branch")])]
+    if args.modele:
+        cmd += ["--model", args.modele]
+    with checkout_propre(racine, kc.REFERENCE) as dossier:
+        r = subprocess.run(cmd, cwd=dossier, stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, env=environnement())
+    try:
+        sortie = json.loads(r.stdout)
+    except ValueError:
+        return False, 0.0, r.stdout + r.stderr
+    texte = str(sortie.get("result") or "")
+    cout = float(sortie.get("total_cost_usd") or 0)
+    return (not sortie.get("is_error") and verdict(texte)), cout, texte
+
+
+def fusionner_branche(racine, b):
+    r = git(["merge", "--no-ff", "-m", "Fusion de %s : %s" % (b["id"], b["description"]),
+             b["sha"]], racine, verifier=False)
+    if r.returncode != 0:
+        git(["merge", "--abort"], racine, verifier=False)
+        return "conflit à la fusion : remise en file"
+    t = subprocess.run([sys.executable, os.path.join(BIN, "tout-verifier")], cwd=racine,
+                       capture_output=True, text=True)
+    if t.returncode != 0:
+        git(["reset", "--hard", "ORIG_HEAD"], racine)
+        return "tests rouges après fusion : fusion annulée\n" + (t.stdout + t.stderr)[-1500:]
+    ecarts = kc.ecarts_d28(racine, kc.REFERENCE + "..HEAD", *kc.pilote(racine))
+    if ecarts:
+        git(["reset", "--hard", "ORIG_HEAD"], racine)
+        return "D28 : fusion annulée, pas de push : " + " ; ".join(ecarts)
+    p = git(["push", "origin", "HEAD:main"], racine, verifier=False)
+    if p.returncode != 0:
+        git(["reset", "--hard", "ORIG_HEAD"], racine)
+        return "push refusé : fusion locale annulée : " + p.stderr.strip()
+    worktree = os.path.join(racine, ".claude", "worktrees", b["id"])
+    git(["worktree", "unlock", worktree], racine, verifier=False)
+    git(["worktree", "remove", "--force", worktree], racine, verifier=False)
+    return None
+
+
+def recapitulatif(racine, infos, cout_relectures, args):
+    horodatage = time.strftime("%Y%m%d-%H%M%S")
+    lignes = ["# Récapitulatif d'orchestre — " + time.strftime("%Y-%m-%d %H:%M"), "",
+              "orchestre ne fusionne pas : le pilote lance « orchestre fusionner » (D29).", "",
+              "| Fonctionnalité | État | Coût ($) | Diff (lignes) | Signalements |",
+              "|---|---|---|---|---|"]
+    for i in infos:
+        etat = PRETE if i["prete"] else A_RELIRE + " : " + (i["raison"] or "?").split("\n")[0]
+        lignes.append("| %s | %s | %.4f | %d | %s |" % (
+            i["id"], etat, i["cout"], i["taille"], " ; ".join(i["signaux"]) or "—"))
+    total = sum(i["cout"] for i in infos) + cout_relectures
+    lignes += ["", "Coût des relectures /code-review : %.4f $" % cout_relectures,
+               "**Coût total : %.4f $**" % total, ""]
+    pretes = [i for i in infos if i["prete"]]
+    lignes.append("Branches prêtes (à fusionner par « orchestre fusionner ») :")
+    lignes += ["- %s (%s)" % (i["branche"], i["sha"][:12]) for i in pretes] or ["- aucune"]
+    lignes += ["", "Branches à relire (points de rendez-vous du pilote) :"]
+    lignes += ["- %s : %s" % (i["branche"], (i["raison"] or "?").split("\n")[0])
+               for i in infos if not i["prete"]] or ["- aucune"]
+    texte = "\n".join(lignes) + "\n"
+    os.makedirs(os.path.join(racine, ".kit"), exist_ok=True)
+    base = os.path.join(racine, ".kit", "recapitulatif-" + horodatage)
+    with open(base + ".md", "w", encoding="utf-8") as f:
+        f.write(texte)
+    donnees = json.dumps({"ci": args.ci, "branches": [
+        {"id": i["id"], "branche": i["branche"], "sha": i["sha"],
+         "description": i["description"], "etat": PRETE if i["prete"] else A_RELIRE,
+         "raison": i["raison"]} for i in infos]}, ensure_ascii=False, indent=2).encode("utf-8")
+    with open(base + ".json", "wb") as f:
+        f.write(donnees)
+    print(texte)
+    # L'empreinte n'existe que sur la sortie d'orchestre, sous les yeux du pilote : un fichier
+    # déposé dans .kit/ par du code de l'agent ne la porte pas (constat 1 de la relecture).
+    print("Pour fusionner : orchestre fusionner --recapitulatif "
+          + hashlib.sha256(donnees).hexdigest())
+
+
+def preparer_main(racine):
+    if git(["rev-parse", "--abbrev-ref", "HEAD"], racine).stdout.strip() != "main":
+        raise kc.Erreur("le checkout principal doit être sur main")
+    if git(["status", "--porcelain", "--untracked-files=no"], racine).stdout.strip():
+        raise kc.Erreur("le checkout principal a des modifications non commitées")
+    git(["fetch", "origin"], racine)
+    git(["merge", "--ff-only", kc.REFERENCE], racine)
+
+
+def lancer_lot(racine, args):
+    if not os.path.isfile(os.path.join(racine, ".claude", "settings.json")):
+        raise kc.Erreur(".claude/settings.json absent : lancer l'installateur du kit")
+    liste = kc.charger_liste(kc.lire_a_la_reference(racine, kc.REFERENCE, kc.LISTE))
+    lot = former_lot(liste)
+    if not lot:
+        print("orchestre : aucune fonctionnalité prête.")
+        return 0
+    print("orchestre : lot de %d : %s" % (len(lot), ", ".join(f["id"] for f in lot)))
+    sessions = [Session(racine, f, args) for f in lot]
+    for s in sessions:
+        s.fil.join()
+    infos = [evaluer(racine, s) for s in sessions]
+    for i, f in zip(infos, lot):
+        i["description"], i["prete"] = f["description"], False
+
+    for i in infos:  # signal de dérive vers le lourd (methode.md §2.12)
+        autres = [j["taille"] for j in infos if j is not i and j["jalon"] == i["jalon"]
+                  and j["taille"] > 0]
+        if i.get("validee"):
+            if autres and i["taille"] > 2 * statistics.median(autres):
+                i["signaux"].append("diff plus de deux fois plus gros que les autres du jalon")
+                i["raison"] = i["raison"] or "taille du diff : relecture du responsable technique"
+
+    cout_relectures = 0.0
+    for i in infos:
+        if i["raison"]:
+            continue
+        ok, message = verifier_ci(racine, args, i["branche"], i["sha"])
+        if not ok:
+            i["raison"] = message
+            continue
+        accepte, cout, texte = relire(racine, i["branche"], args)
+        cout_relectures += cout
+        with open(os.path.join(racine, ".kit", "sessions", i["id"] + "-relecture.md"), "w",
+                  encoding="utf-8") as f:
+            f.write(texte)
+        if not accepte:
+            i["raison"] = ("/code-review : dernière ligne ni « (none) » ni « VERDICT : AUCUN "
+                           "BLOQUANT » : relecture humaine")
+            continue
+        i["prete"] = True
+    recapitulatif(racine, infos, cout_relectures, args)
+    return 0
+
+
+def fusionner(racine, args):
+    """Fusionne une par une les branches « prêtes » du récapitulatif dont le pilote donne
+    l'empreinte (affichée par orchestre), jamais « le dernier fichier de .kit/ »."""
+    empreinte = (args.recapitulatif or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", empreinte):
+        raise kc.Erreur("--recapitulatif <empreinte> obligatoire (64 caractères hexadécimaux, "
+                        "affichée à la fin d'orchestre)")
+    choisi = None
+    for chemin in glob.glob(os.path.join(racine, ".kit", "recapitulatif-*.json")):
+        with open(chemin, "rb") as f:
+            donnees = f.read()
+        if hashlib.sha256(donnees).hexdigest() == empreinte:
+            choisi = chemin
+            branches = json.loads(donnees.decode("utf-8"))["branches"]
+    if choisi is None:
+        raise kc.Erreur("aucun récapitulatif de .kit/ ne correspond à l'empreinte donnée")
+    print("orchestre fusionner : " + os.path.relpath(choisi, racine))
+    for b in branches:
+        if b["etat"] != PRETE:
+            print("- %s : à relire, non fusionnée" % b["branche"])
+            continue
+        actuel = git(["rev-parse", "--verify", "-q", b["branche"]], racine, verifier=False)
+        if actuel.stdout.strip() != b["sha"]:
+            print("- %s : à relire : la branche a bougé depuis le récapitulatif" % b["branche"])
+            continue
+        if git(["merge-base", "--is-ancestor", b["sha"], "HEAD"], racine,
+               verifier=False).returncode == 0:
+            print("- %s : déjà fusionnée" % b["branche"])
+            continue
+        ok, message = verifier_ci(racine, args, b["branche"], b["sha"])
+        if not ok:
+            print("- %s : à relire : %s" % (b["branche"], message.split("\n")[0]))
+            continue
+        raison = fusionner_branche(racine, b)
+        print("- %s : %s" % (b["branche"], "fusionnée" if raison is None
+                             else "non fusionnée : " + raison.split("\n")[0]))
+    return 0
+
+
+def principal():
+    p = argparse.ArgumentParser(description="Orchestre réduit du kit.", allow_abbrev=False)
+    p.add_argument("commande", nargs="?", choices=["fusionner"])
+    p.add_argument("--depot", default=".")
+    p.add_argument("--modele")
+    p.add_argument("--ci", choices=["github", "locale"], default="github")
+    p.add_argument("--sans-surveillance", type=float, metavar="PLAFOND_USD")
+    p.add_argument("--recapitulatif", metavar="EMPREINTE",
+                   help="fusionner : empreinte du récapitulatif, affichée par orchestre")
+    p.add_argument("--essai-du-kit", action="store_true",
+                   help="réservé aux tests du kit et à tests/essai-bout-en-bout (D31)")
+    args = p.parse_args()
+    if not args.essai_du_kit:
+        sys.stderr.write(
+            "orchestre : refusé : bloqué avant le point de contrôle (D31) ; constats ouverts "
+            "dans CHANGELOG.md (« Limites connues »). Une fonctionnalité = une session, en "
+            "série. --essai-du-kit est réservé aux tests du kit.\n")
+        return 2
+
+    racine = kc.racine_depot(args.depot)
+    preparer_main(racine)
+    if args.commande == "fusionner":
+        return fusionner(racine, args)
+    return lancer_lot(racine, args)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(principal())
+    except Exception as e:
+        sys.stderr.write("orchestre : arrêt : %s : %s\n" % (type(e).__name__, e))
+        sys.exit(2)

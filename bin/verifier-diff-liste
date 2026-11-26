@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""verifier-diff-liste <ref> [feature_list.json]
+
+Refuse (code 1) toute différence de feature_list.json par rapport à <ref> en dehors
+du champ « passes ». Utilisé par la CI et par le hook fin-de-session.
+Code 0 : seul « passes » a changé (ou rien). Code 2 : erreur (échouer fermé).
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import kit_commun as kc  # noqa: E402
+
+
+def principal(args):
+    if len(args) not in (1, 2):
+        sys.stderr.write("usage : verifier-diff-liste <ref> [feature_list.json]\n")
+        return 2
+    reference = args[0]
+    chemin = args[1] if len(args) == 2 else kc.LISTE
+    depot = kc.racine_depot(os.getcwd())
+    relatif = os.path.relpath(os.path.abspath(chemin), depot)
+    avant = json.loads(kc.lire_a_la_reference(depot, reference, relatif))
+    with open(chemin, encoding="utf-8") as f:
+        apres = json.load(f)
+    ecarts = kc.ecarts_hors_passes(avant, apres)
+    if ecarts:
+        sys.stderr.write("verifier-diff-liste : %s modifié hors du champ passes :\n  %s\n"
+                         % (relatif, "\n  ".join(ecarts)))
+        return 1
+    print("verifier-diff-liste : %s conforme (seul passes peut changer)." % relatif)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(principal(sys.argv[1:]))
+    except Exception as e:
+        sys.stderr.write("verifier-diff-liste : erreur : %s : %s\n" % (type(e).__name__, e))
+        sys.exit(2)

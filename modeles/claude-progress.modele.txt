@@ -1,0 +1,8 @@
+=== AAAA-MM-JJ HH:MM | F000 | session <id> | modèle <nom> ===
+FAIT : <2 à 5 lignes>
+ÉTAT : validée | en cours | bloquée
+TEST CONTESTÉ : <id du test, raison> (sinon : aucun)
+DEMANDE HUMAINE : <ce qui a été refusé et pourquoi c'était nécessaire> (sinon : aucune)
+TROP GROS : <découpage proposé> (sinon : non)
+PROCHAINE ÉTAPE : <1 ligne>
+COÛT : <total_cost_usd> $ (sinon : voir le récapitulatif d'orchestre)

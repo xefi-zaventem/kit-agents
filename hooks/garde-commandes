@@ -114,27 +114,43 @@ def nom_commande(tok):
     return "", []
 
 
+def resoudre(courant, chemin):
+    """Chemin absolu d'un argument relatif, depuis le dossier courant suivi."""
+    chemin = re.sub(r"^[0-9]*[<>]+[&|]?", "", chemin)
+    if not chemin or chemin.startswith(("-", "~", "$")) or not courant:
+        return chemin
+    return os.path.normpath(os.path.join(courant, chemin))
+
+
 def verifier_chemins_bash(regles, commande, cwd):
-    dossier_protege = est_protege(regles, (cwd or "") + "/")
+    courant = cwd or ""
+    dossier_protege = est_protege(regles, courant + "/")
     for seg in SEPARATEURS.split(commande):
         if not seg.strip():
             continue
         tok = jetons(seg)
         nom, args = nom_commande(tok)
-        mentionne = est_protege(regles, seg)
+        mentionne = est_protege(regles, seg) or any(
+            est_protege(regles, resoudre(courant, t)) for t in tok)
         if nom in ("cd", "pushd") and args:
-            dossier_protege = est_protege(regles, args[-1].rstrip("/") + "/")
+            courant = resoudre(courant, args[-1]) if courant else args[-1]
+            dossier_protege = est_protege(regles, courant.rstrip("/") + "/")
             continue
         if not mentionne and not dossier_protege:
             continue
         if nom in regles["_lecture"]:
             pos = seg.find(">")
-            if pos >= 0 and (est_protege(regles, seg[pos:]) or dossier_protege):
-                refuser("redirection vers un chemin protégé")
+            if pos >= 0:
+                cible = seg[pos:].lstrip(">|& ").split()
+                cible = resoudre(courant, cible[0]) if cible else ""
+                if est_protege(regles, seg[pos:]) or dossier_protege or est_protege(regles, cible):
+                    refuser("redirection vers un chemin protégé")
             continue
         if nom in regles["_copie"]:
             cibles = [a for a in args if not a.startswith("-")]
-            if cibles and not est_protege(regles, cibles[-1]) and not dossier_protege:
+            if cibles and not est_protege(regles, cibles[-1]) \
+                    and not est_protege(regles, resoudre(courant, cibles[-1])) \
+                    and not dossier_protege:
                 continue
             refuser("copie vers un chemin protégé")
         refuser("commande « " + (nom or seg.strip()[:40]) +
@@ -172,7 +188,7 @@ def principal():
         verifier_chemins_bash(regles, commande, donnees.get("cwd", ""))
     elif outil in OUTILS_ECRITURE:
         chemin = entree.get("file_path") or entree.get("notebook_path") or ""
-        reel = os.path.realpath(chemin) if chemin else ""
+        reel = os.path.realpath(os.path.join(donnees.get("cwd") or "", chemin)) if chemin else ""
         if chemin and (est_protege(regles, chemin) or est_protege(regles, reel)):
             refuser("écriture dans un chemin protégé : " + chemin)
         contenu = entree.get("content") or entree.get("new_string") or ""
@@ -180,6 +196,7 @@ def principal():
             contenu += "\n" + (e.get("new_string") or "")
         if est_script(chemin, contenu):
             analyser_texte(regles, contenu)
+    print("garde-commandes : autorisé")  # marque lue par orchestre : hooks du kit chargés
     sys.exit(0)
 
 

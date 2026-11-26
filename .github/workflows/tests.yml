@@ -1,0 +1,12 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests du kit (hooks, scripts, Docker)
+        run: |
+          docker pull -q python:3.13-slim
+          python3 --version
+          python3 -m unittest discover -s tests -v

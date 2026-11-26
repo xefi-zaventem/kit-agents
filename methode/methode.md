@@ -56,6 +56,10 @@ Une conversation **produit** ces fichiers. Elle n'est jamais la source de vérit
   Anthropic a constaté que les tests unitaires et `curl` seuls laissent passer les échecs de bout en bout.
 - L'agent de code ne peut ni écrire dans `tests/acceptance/`, ni modifier `feature_list.json`
   directement : c'est imposé par le sandbox et les permissions, pas seulement par un hook (`07`, §4.3).
+- `init.sh`, `.github/` et la configuration du lanceur de tests (`conftest.py`, réglages de pytest,
+  `pyproject.toml`, `setup.cfg`, `sitecustomize.py`…, à tout niveau) appartiennent aussi à la
+  référence : une dépendance ou un réglage d'outil passe par une `DEMANDE HUMAINE`, et le pilote le
+  change sur `main`.
 - `passes` ne passe à `true` que par `marquer-valide <id>`, qui lance le test de la fonctionnalité et
   n'écrit que si le test passe. L'agent ne peut pas « réussir » en changeant la règle.
 - `marquer-valide` prend le test et `feature_list.json` **dans la branche de référence** (pas dans
@@ -63,7 +67,11 @@ Une conversation **produit** ces fichiers. Elle n'est jamais la source de vérit
   d'écriture sur le dépôt. Raison : le test exécute le code de l'agent ; s'il tournait avec les droits
   de `marquer-valide`, ce code pourrait écrire `passes` lui-même (`08`, §5).
 - L'intégration continue (CI) relance tous les tests d'acceptation à chaque envoi : c'est le contrôle
-  final, hors de la machine de l'agent. Une fusion n'a lieu que si la CI est verte.
+  final, hors de la machine de l'agent. Une fusion n'a lieu que si la CI est verte, et seulement à
+  l'initiative du pilote (`orchestre fusionner`, D29).
+- `init.sh` appartient à la référence, comme `tests/acceptance/` et `tests/acceptance/kit.json` :
+  les hooks lancent toujours la version de `origin/main`, l'agent ne peut pas l'écrire, et la CI
+  échoue s'il diffère (`08`, §10).
 - La liste est en JSON, pas en Markdown : les modèles réécrivent plus volontiers le Markdown.
 
 **Test contesté.** Si un agent pense qu'un test d'acceptation est faux (URL, sélecteur, attente
@@ -146,8 +154,9 @@ Plusieurs agents en même temps **si et seulement si** l'orchestrateur le vérif
    - chacune a sa branche, son worktree et sa propre base de données de test.
 3. **Jamais** en parallèle : la tranche exemplaire, une migration de schéma, une modification de contrat.
 4. Au plus **3 agents** à la fois (au-delà, la relecture humaine décroche).
-5. Fusion **une par une** par l'orchestrateur ; tests complets après chaque fusion ; un conflit renvoie
-   la fonctionnalité en file d'attente, il n'est pas résolu par un agent.
+5. Fusion **une par une**, lancée par le pilote (`orchestre fusionner`) sur les branches qu'`orchestre`
+   a classées « prêtes » (D29) ; CI revérifiée juste avant ; tests complets après chaque fusion ; un
+   conflit renvoie la fonctionnalité en file d'attente, il n'est pas résolu par un agent.
 
 ### 2.11 Le style est décidé par l'humain et verrouillé par des outils
 

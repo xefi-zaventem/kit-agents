@@ -1,0 +1,38 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Kit à la version du projet (.kit-version)
+        uses: actions/checkout@v4
+        with: { repository: "<organisation>/kit-agents", ref: "<étiquette de .kit-version>", path: kit }
+      - name: Tests d'acceptation, init.sh et liste inchangés (sauf « passes ») ; D28
+        run: |
+          BASE=refs/remotes/origin/main
+          FUSION=""
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then BASE=HEAD~1; FUSION=--fusion-github; fi
+          git diff --exit-code "$BASE" -- tests/acceptance/ init.sh
+          if [ -z "$FUSION" ]; then
+            # Configuration du lanceur de tests, à tout niveau : changements de la branche seule,
+            # depuis son point de départ (pas ceux de main). .github/ n'est pas contrôlé ici :
+            # GitHub lance le workflow de la branche elle-même (methode/modeles.md §9).
+            SPECS=()
+            for n in conftest.py pytest.ini .pytest.ini pytest.toml tox.ini setup.cfg \
+                     pyproject.toml sitecustomize.py usercustomize.py; do
+              SPECS+=(":(glob)**/$n")
+            done
+            DEPART=$(git merge-base refs/remotes/origin/main "$TETE")
+            git diff --exit-code "$DEPART" "$TETE" -- "${SPECS[@]}"
+            test -z "$(git ls-files --others --exclude-standard -- "${SPECS[@]}")"
+          fi
+          python3 kit/bin/verifier-diff-liste "$BASE" feature_list.json
+          python3 kit/bin/verifier-auteurs $FUSION "$BASE..$TETE" "$PILOTE_NOM" "$PILOTE_COURRIEL"
+        env:
+          TETE: ${{ github.event.pull_request.head.sha || github.sha }}
+          PILOTE_NOM: ${{ vars.KIT_PILOTE_NOM }}
+          PILOTE_COURRIEL: ${{ vars.KIT_PILOTE_COURRIEL }}
+      - name: Tous les contrôles
+        run: ./init.sh --ci && ./kit/bin/tout-verifier
