@@ -19,6 +19,16 @@ MOTIFS_D28 = (("co-authored-by", "Co-Authored-By"),
               ("generated with [claude code]", "mention « Generated with Claude Code »"),
               ("claude.com/claude-code", "lien claude.com/claude-code"),
               ("claude.ai/code", "lien de session claude.ai/code"))
+# Fusion faite sur GitHub (bouton ou gh pr merge) : le commit de fusion a ce committer.
+COMMITTER_GITHUB = ("GitHub", "noreply@github.com")
+# Fichiers qui appartiennent à la référence : une branche d'agent ne les change pas
+# (fin-de-session, CI du modèle). .github/ : sinon la branche peut vider sa propre CI.
+PROTEGES = ("tests/acceptance/", "init.sh", ".github/")
+# Configuration du lanceur de tests lue dans la copie de travail (conftest.py, options de
+# pytest, sitecustomize) : changée par l'agent, elle peut rendre un test vert sans ses
+# assertions. Seul le pilote la change sur main ; marquer-valide refuse sinon.
+CONFIG_TESTS = (":(glob)**/conftest.py", "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml",
+                ":(glob)**/sitecustomize.py", ":(glob)**/usercustomize.py")
 LISTE = "feature_list.json"
 DOSSIER_TESTS = "tests/acceptance"
 LANCEUR = DOSSIER_TESTS + "/kit.json"
@@ -58,9 +68,20 @@ def pilote(depot):
     return m.group(1), m.group(2)
 
 
-def ecarts_d28(depot, plage, nom, courriel):
+def fichiers_modifies(depot, base, chemins=()):
+    """Fichiers suivis qui diffèrent de <base> et fichiers nouveaux non ignorés, limités aux
+    chemins (pathspecs git) donnés."""
+    suivis = git(["diff", "--name-only", base, "--"] + list(chemins), depot).split("\n")
+    nouveaux = git(["ls-files", "--others", "--exclude-standard", "--"] + list(chemins),
+                   depot).split("\n")
+    return sorted({f for f in suivis + nouveaux if f})
+
+
+def ecarts_d28(depot, plage, nom, courriel, fusion_github=False):
     """D28 : chaque commit de <plage> est au seul nom du pilote, sans Co-Authored-By,
     anthropic.com, « Generated with Claude Code » ni lien de session (MOTIFS_D28).
+    fusion_github (CI de main seulement) : un commit dont l'auteur est le pilote peut avoir
+    COMMITTER_GITHUB pour committer (fusion d'une PR faite sur GitHub).
     Renvoie la liste des écarts (vide si tout est conforme)."""
     if not nom or not courriel:
         return ["pilote non configuré (nom et courriel obligatoires)"]
@@ -71,7 +92,10 @@ def ecarts_d28(depot, plage, nom, courriel):
         if len(lignes) < 5:
             continue
         sha, texte = lignes[0][:12], "\n".join(lignes[1:]).lower()
-        if lignes[1:5] != [nom, courriel, nom, courriel]:
+        admis = [[nom, courriel, nom, courriel]]
+        if fusion_github:
+            admis.append([nom, courriel] + list(COMMITTER_GITHUB))
+        if lignes[1:5] not in admis:
             ecarts.append(sha + " : auteur ou committer autre que le pilote (%s / %s)"
                           % (lignes[1] + " <" + lignes[2] + ">", lignes[3] + " <" + lignes[4] + ">"))
         vus = []

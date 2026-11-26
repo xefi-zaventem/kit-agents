@@ -132,6 +132,64 @@ class TestInstaller(unittest.TestCase):
         ecrire(depot, "init.sh", "#!/bin/sh\nexit 0\n", executable=True)
         self.assertNotEqual(ci().returncode, 0)
 
+    def projet_ci(self, ref="refs/heads/agent/F001", nom="projet-ci"):
+        """Étape « Tests d'acceptation… D28 » du modèle installé, sur un projet d'essai."""
+        if not os.path.exists(os.path.join(self.depot, ".github/workflows/tests.yml")):
+            self.assertEqual(self.installer().returncode, 0)
+        script = self.etape_ci(lire(self.depot, ".github/workflows/tests.yml"),
+                               "Tests d'acceptation")
+        projet = os.path.join(self.tmp.name, nom)
+        os.makedirs(projet)
+        depot = creer_depot(projet, [fonctionnalite("F001", ["app/"])])
+        os.symlink(KIT, os.path.join(depot, "kit"))
+        nom, courriel = git(depot, "var", "GIT_AUTHOR_IDENT").rsplit(">", 1)[0].split(" <")
+        env = dict(os.environ, GITHUB_REF=ref, TETE="HEAD", PILOTE_NOM=nom,
+                   PILOTE_COURRIEL=courriel)
+        ci = lambda: subprocess.run(["bash", "-e", "-c", script], cwd=depot, env=env,
+                                    capture_output=True, text=True)
+        return depot, ci, env
+
+    def test_ci_etiquette_origin_main_ne_trompe_pas(self):
+        """Relecture du 26/11 (constat 1) : une étiquette « origin/main » posée par l'agent sur
+        son commit ne remplace pas la référence (nom complet refs/remotes/origin/main)."""
+        depot, ci, _ = self.projet_ci()
+        ecrire(depot, "tests/acceptance/test_f001.py", "pass  # truqué\n")
+        git(depot, "add", "tests")
+        git(depot, "commit", "-q", "-m", "a")
+        git(depot, "tag", "origin/main")
+        r = ci()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ci_rouge_si_github_ou_configuration_des_tests_changent(self):
+        """Relecture du 26/11 (constats 2 et 3) : sur une branche, .github/ et la configuration
+        du lanceur de tests ne changent pas, commités ou non."""
+        depot, ci, _ = self.projet_ci()
+        self.assertEqual(ci().returncode, 0, ci().stdout + ci().stderr)
+        for relatif, commit in ((".github/workflows/tests.yml", True), ("conftest.py", False),
+                                ("app/conftest.py", True), ("pyproject.toml", True)):
+            ecrire(depot, relatif, "# agent\n")
+            if commit:
+                git(depot, "add", relatif)
+                git(depot, "commit", "-q", "-m", "config")
+            self.assertNotEqual(ci().returncode, 0, relatif)
+            git(depot, "reset", "-q", "--hard", "refs/remotes/origin/main")
+            git(depot, "clean", "-q", "-fd", "-e", "kit")
+
+    def test_ci_de_main_admet_la_fusion_faite_sur_github(self):
+        """Relecture du 26/11 (constat 6) : sur main, le commit de fusion de GitHub (auteur =
+        pilote, committer « GitHub <noreply@github.com> ») passe D28 ; ailleurs, non."""
+        for ref, attendu in (("refs/heads/main", 0), ("refs/heads/agent/F001", 1)):
+            depot, ci, env = self.projet_ci(ref, nom="projet-" + ref.split("/")[-1])
+            ecrire(depot, "app/a.py", "a = 1\n")
+            git(depot, "add", "app")
+            subprocess.run(["git", "commit", "-q", "-m", "Fusion (#1)"], cwd=depot, check=True,
+                           env=dict(env, GIT_COMMITTER_NAME="GitHub",
+                                    GIT_COMMITTER_EMAIL="noreply@github.com"))
+            r = ci()
+            self.assertEqual(r.returncode != 0, bool(attendu), ref + r.stdout + r.stderr)
+            if attendu:
+                self.assertIn("D28", r.stdout)
+
     def test_ci_rouge_si_commit_hors_d28(self):
         """Constat 3 : le modèle de CI refuse un co-auteur, anthropic.com ou un autre auteur."""
         self.assertEqual(self.installer().returncode, 0)

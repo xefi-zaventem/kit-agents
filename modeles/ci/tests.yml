@@ -11,11 +11,19 @@ jobs:
         with: { repository: "<organisation>/kit-agents", ref: "<étiquette de .kit-version>", path: kit }
       - name: Tests d'acceptation, init.sh et liste inchangés (sauf « passes ») ; D28
         run: |
-          BASE=origin/main
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then BASE=HEAD~1; fi
+          BASE=refs/remotes/origin/main
+          FUSION=""
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then BASE=HEAD~1; FUSION=--fusion-github; fi
           git diff --exit-code "$BASE" -- tests/acceptance/ init.sh
+          if [ -z "$FUSION" ]; then
+            git diff --exit-code "$BASE" -- .github/ ':(glob)**/conftest.py' pytest.ini tox.ini \
+              setup.cfg pyproject.toml ':(glob)**/sitecustomize.py' ':(glob)**/usercustomize.py'
+            test -z "$(git ls-files --others --exclude-standard -- .github/ ':(glob)**/conftest.py' \
+              pytest.ini tox.ini setup.cfg pyproject.toml ':(glob)**/sitecustomize.py' \
+              ':(glob)**/usercustomize.py')"
+          fi
           python3 kit/bin/verifier-diff-liste "$BASE" feature_list.json
-          python3 kit/bin/verifier-auteurs "$BASE..$TETE" "$PILOTE_NOM" "$PILOTE_COURRIEL"
+          python3 kit/bin/verifier-auteurs $FUSION "$BASE..$TETE" "$PILOTE_NOM" "$PILOTE_COURRIEL"
         env:
           TETE: ${{ github.event.pull_request.head.sha || github.sha }}
           PILOTE_NOM: ${{ vars.KIT_PILOTE_NOM }}

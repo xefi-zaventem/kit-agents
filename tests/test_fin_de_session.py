@@ -57,6 +57,20 @@ class TestFinDeSession(unittest.TestCase):
         ecrire(self.depot, "tests/acceptance/nouveau.py", "pass\n")  # fichier ajouté
         self.assertEqual(self.stop(session="s2").returncode, 2)
 
+    def test_github_et_configuration_des_tests_proteges(self):
+        """Relecture du 26/11 (constats 2 et 3) : .github/ et la configuration du lanceur de
+        tests appartiennent à la référence, comme tests/acceptance/."""
+        for i, relatif in enumerate((".github/workflows/tests.yml", "conftest.py",
+                                     "app/conftest.py", "pyproject.toml")):
+            self.travail_correct()
+            ecrire(self.depot, relatif, "# agent\n")
+            r = self.stop(session="p%d" % i)
+            self.assertEqual(r.returncode, 2, relatif)
+            self.assertIn("fichier protégé modifié", r.stderr, relatif)
+            self.assertIn(relatif, r.stderr)
+            git(self.depot, "checkout", "-q", "--", ".")
+            git(self.depot, "clean", "-q", "-fd")
+
     def test_liste_modifiee_hors_passes(self):
         self.travail_correct()
         chemin = os.path.join(self.depot, "feature_list.json")
@@ -126,7 +140,7 @@ class TestFinDeSession(unittest.TestCase):
         r = self.stop()
         self.assertEqual(r.returncode, 2)
         self.assertIn("init.sh --rapide", r.stderr)
-        self.assertIn("init.sh modifié", r.stderr)
+        self.assertIn("fichier protégé modifié", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.depot, "EXECUTE_PAR_LE_HOOK")))
 
     def test_le_hook_plante(self):

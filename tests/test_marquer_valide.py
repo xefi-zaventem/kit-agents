@@ -120,6 +120,23 @@ class TestMarquerValide(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("F002", r.stderr)
 
+    def test_configuration_des_tests_modifiee_refusee(self):
+        """Relecture du 26/11 (constat 3) : un conftest.py ou une option de pytest ajoutés par
+        l'agent pourraient rendre le test vert sans ses assertions : refus avant le test."""
+        for relatif, commit in (("conftest.py", False), ("app/conftest.py", False),
+                                ("pyproject.toml", True), ("pytest.ini", False)):
+            ecrire(self.depot, relatif, "# agent\n")
+            if commit:
+                git(self.depot, "add", relatif)
+                git(self.depot, "commit", "-q", "-m", "config")
+            r = self.marquer("F001")
+            self.assertNotEqual(r.returncode, 0, relatif)
+            self.assertIn("configuration des tests", r.stderr, relatif)
+            self.assertIn(relatif, r.stderr)
+            self.assertFalse(self.passes()["F001"])
+            git(self.depot, "reset", "-q", "--hard", "main")
+            git(self.depot, "clean", "-q", "-fd")
+
     def test_reference_autre_que_origin_main_refusee(self):
         """Constat 2 : la référence reste origin/main (D25) ; une valeur en « - » n'est
         jamais passée à git comme option."""

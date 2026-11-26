@@ -39,7 +39,7 @@ import kit_commun as kc  # noqa: E402
 REFERENCE = kc.REFERENCE
 PROGRESSION = "claude-progress.txt"
 LISTE = "feature_list.json"
-PROTEGES = ["tests/acceptance/", "init.sh"]
+PROTEGES = list(kc.PROTEGES + kc.CONFIG_TESTS)
 MAX_BLOCAGES = 3
 
 
@@ -94,7 +94,8 @@ def controles(racine):
         raisons.append(PROGRESSION + " n'a pas été mis à jour (ajoute l'entrée de la session)")
     proteges = fichiers_modifies(racine, base, PROTEGES)
     if proteges:
-        raisons.append("tests/acceptance/ ou init.sh modifié (interdit : ils appartiennent à la "
+        raisons.append("fichier protégé modifié (tests/acceptance/, init.sh, .github/ ou "
+                       "configuration des tests ; interdit : ils appartiennent à la "
                        "référence ; écris TEST CONTESTÉ ou DEMANDE HUMAINE dans "
                        + PROGRESSION + ") : " + ", ".join(proteges))
     if os.path.exists(os.path.join(racine, LISTE)):

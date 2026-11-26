@@ -130,7 +130,9 @@ Un critère sous son seuil = jalon refusé, avec une liste de corrections exploi
   "attribution": { "commit": "", "pr": "", "sessionUrl": false },
   "permissions": {
     "deny": [
-      "Edit(tests/acceptance/**)", "Edit(feature_list.json)", "Edit(init.sh)",
+      "Edit(tests/acceptance/**)", "Edit(feature_list.json)", "Edit(init.sh)", "Edit(.github/**)",
+      "Edit(**/conftest.py)", "Edit(pytest.ini)", "Edit(tox.ini)", "Edit(setup.cfg)",
+      "Edit(pyproject.toml)", "Edit(**/sitecustomize.py)", "Edit(**/usercustomize.py)",
       "Edit(.claude/**)", "Edit(~/.claude/**)",
       "Read(.env*)", "Read(**/secrets/**)"
     ]
@@ -140,7 +142,9 @@ Un critère sous son seuil = jalon refusé, avec une liste de corrections exploi
     "allowUnsandboxedCommands": false,
     "failIfUnavailable": true,
     "filesystem": {
-      "denyWrite": ["tests/acceptance", "feature_list.json", "init.sh", ".claude", "~/.claude"],
+      "denyWrite": ["tests/acceptance", "feature_list.json", "init.sh", ".github", "conftest.py",
+                    "tests/conftest.py", "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml",
+                    ".claude", "~/.claude"],
       "denyRead": ["**/secrets"]
     },
     "network": {
@@ -288,11 +292,17 @@ jobs:
         with: { repository: "<organisation>/kit-agents", ref: "<étiquette de .kit-version>", path: kit }
       - name: Tests d'acceptation et liste inchangés (sauf « passes »)
         run: |
-          git diff --exit-code origin/main -- tests/acceptance/ init.sh
-          python3 kit/bin/verifier-diff-liste origin/main feature_list.json
+          git diff --exit-code refs/remotes/origin/main -- tests/acceptance/ init.sh
+          python3 kit/bin/verifier-diff-liste refs/remotes/origin/main feature_list.json
       - name: Tous les contrôles
         run: ./init.sh --ci && ./kit/bin/tout-verifier
 ```
+
+La référence s'écrit en nom complet (`refs/remotes/origin/main`) : une étiquette ou une branche
+nommée `origin/main` par l'agent ne la remplace pas. Sur une branche, le modèle livré vérifie aussi
+que `.github/` et la configuration du lanceur de tests (`conftest.py` à tout niveau, `pytest.ini`,
+`tox.ini`, `setup.cfg`, `pyproject.toml`, `sitecustomize.py`, `usercustomize.py`) n'ont pas changé :
+seul le pilote les change, sur `main`.
 
 Le modèle livré (`modeles/ci/tests.yml`) ajoute à la première étape le contrôle D28 :
 `kit/bin/verifier-auteurs "$BASE..<tête>" "$KIT_PILOTE_NOM" "$KIT_PILOTE_COURRIEL"` (variables du
@@ -300,7 +310,10 @@ dépôt GitHub `vars.KIT_PILOTE_NOM` et `vars.KIT_PILOTE_COURRIEL`, à poser par
 rouge). Tout commit dont l'auteur ou le committer n'est pas le pilote, ou qui contient
 `Co-Authored-By`, `anthropic.com`, « Generated with Claude Code » ou un lien de session
 (`claude.com/claude-code`, `claude.ai/code`), rend la CI rouge. `orchestre` fait le même contrôle avant chaque
-push.
+push. Sur `main` seulement, `--fusion-github` admet le committer « GitHub <noreply@github.com> » du
+commit qu'écrit une fusion faite sur GitHub, si son auteur est le pilote. Réglage du compte GitHub
+du pilote à faire : les opérations faites sur le site doivent porter son nom et son adresse
+noreply, sinon la CI de `main` est rouge (D28).
 
 `verifier-diff-liste`, `verifier-auteurs` et `tout-verifier` sont fournis par le kit (phase 0). L'installateur remplace les
 deux valeurs entre chevrons. Le dépôt du kit étant public, la CI le lit sans clé. Sur `main` elle-même,
