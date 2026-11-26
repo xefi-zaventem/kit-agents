@@ -181,8 +181,9 @@ class TestInstaller(unittest.TestCase):
             git(depot, "clean", "-q", "-fd", "-e", "kit")
 
     def test_ci_de_branche_ignore_les_changements_de_main(self):
-        """Relecture du 26/11 (régression 1) : le pilote change pyproject.toml sur main après le
-        départ de la branche ; la branche, qui n'y touche pas, reste verte."""
+        """Relectures du 26/11 : le pilote change pyproject.toml sur main après le départ de la
+        branche. La branche, en retard sur main (passage « push »), n'y touche pas : verte.
+        La même branche, après avoir fusionné main, change pyproject.toml : rouge."""
         depot, ci, _ = self.projet_ci()
         git(depot, "switch", "-q", "-c", "agent/F001")
         ecrire(depot, "app/a.py", "a = 1" + chr(10))
@@ -193,10 +194,15 @@ class TestInstaller(unittest.TestCase):
         git(depot, "add", "pyproject.toml")
         git(depot, "commit", "-q", "-m", "dépendance (pilote)")
         git(depot, "push", "-q", "origin", "main")
-        git(depot, "switch", "-q", "agent/F001")
-        git(depot, "merge", "-q", "--no-edit", "main")  # comme le commit de fusion d'une PR
+        git(depot, "switch", "-q", "agent/F001")  # en retard sur main, pas de fusion
         r = ci()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        git(depot, "merge", "-q", "--no-edit", "main")
+        ecrire(depot, "pyproject.toml", "[project]" + chr(10) + "name = 'agent'" + chr(10))
+        git(depot, "add", "pyproject.toml")
+        git(depot, "commit", "-q", "-m", "config (agent)")
+        r = ci()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_ci_de_main_admet_la_fusion_faite_sur_github(self):
         """Relecture du 26/11 (constat 6) : sur main, le commit de fusion de GitHub (auteur =

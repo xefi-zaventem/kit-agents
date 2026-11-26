@@ -276,7 +276,8 @@ composants autorisés sont figés ; en changer passe par le contrôle des change
 
 ## 9. Modèle d'intégration continue (`.github/workflows/tests.yml`)
 
-Contrôle final, hors de la machine de l'agent. Gratuit sur GitHub pour un usage modéré ; à vérifier
+Contrôle final, hors de la machine de l'agent, **sauf pour une branche qui modifie `.github/`** :
+elle peut retirer ses propres contrôles (voir plus bas). Gratuit sur GitHub pour un usage modéré ; à vérifier
 dans les quotas de l'offre de l'organisation.
 
 ```yaml
@@ -305,10 +306,12 @@ que la branche n'a pas changé, depuis son point de départ, la configuration du
 (`conftest.py`, `pytest.ini`, `.pytest.ini`, `pytest.toml`, `tox.ini`, `setup.cfg`,
 `pyproject.toml`, `sitecustomize.py`, `usercustomize.py`, à tout niveau) : seul le pilote la change,
 sur `main`. **`.github/` n'est pas protégé par la CI** : GitHub lance le workflow présent dans la
-branche elle-même, qu'une branche peut donc vider. Il est protégé sur la machine de l'agent
-(`Edit`, `denyWrite`, `fin-de-session`) et par la relecture neuve (D27), qui lit tout le diff. Le
-protéger aussi côté GitHub demande un réglage du dépôt (par exemple CODEOWNERS sur `.github/` avec
-revue obligatoire) : décision du pilote.
+branche elle-même, qu'une branche peut donc vider, et avec lui tous les autres contrôles de la CI.
+Sur la machine de l'agent, `Edit`, `denyWrite` et `fin-de-session` le refusent, mais un commit
+construit sans écrire de fichier (`git hash-object`, `commit-tree`) passe ces trois couches. **Le
+seul filet sûr pour `.github/` est la relecture neuve (D27)**, qui lit tout le diff. CODEOWNERS avec revue obligatoire
+ne convient pas sous D28 (toutes les PR sont au nom du pilote, qui ne peut pas approuver la sienne) ;
+une autre protection côté GitHub est à étudier avec le pilote, doc GitHub à l'appui.
 
 Le modèle livré (`modeles/ci/tests.yml`) ajoute à la première étape le contrôle D28 :
 `kit/bin/verifier-auteurs "$BASE..<tête>" "$KIT_PILOTE_NOM" "$KIT_PILOTE_COURRIEL"` (variables du

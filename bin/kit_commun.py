@@ -22,7 +22,9 @@ MOTIFS_D28 = (("co-authored-by", "Co-Authored-By"),
 # Fusion faite sur GitHub (bouton ou gh pr merge) : le commit de fusion a ce committer.
 COMMITTER_GITHUB = ("GitHub", "noreply@github.com")
 # Fichiers qui appartiennent à la référence : une branche d'agent ne les change pas
-# (fin-de-session, CI du modèle). .github/ : sinon la branche peut vider sa propre CI.
+# (fin-de-session ; tests/acceptance/ et init.sh aussi dans la CI du modèle). .github/ n'est
+# PAS contrôlé par la CI (GitHub lance le workflow de la branche) : seul filet sûr, la
+# relecture neuve (D27). Voir methode/modeles.md §9.
 PROTEGES = ("tests/acceptance/", "init.sh", ".github/")
 # Configuration du lanceur de tests lue dans la copie de travail (conftest.py, fichiers de
 # réglages de pytest, sitecustomize), à tout niveau : pytest cherche ses réglages dans chaque
